@@ -1,0 +1,5 @@
+id: claude-usage
+name: Claude Usage
+summary: Claude plan usage limits
+desc: Displays your Claude subscription 5-hour and weekly usage limits as radial ring gauges, the same numbers as Claude Code's /usage command.
+author: Taylor Bird
