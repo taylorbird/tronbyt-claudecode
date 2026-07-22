@@ -101,7 +101,9 @@ def gauge(label, pct, diameter, show_label):
     lines = []
     if show_label:
         lines.append(render.Text(label, font = "tom-thumb", color = "#888"))
-    lines.append(render.Text("%d%%" % pct, font = "tom-thumb", color = color))
+        lines.append(render.Text("%d%%" % pct, font = "tom-thumb", color = color))
+    else:
+        lines.append(render.Text("%d" % pct, font = "tom-thumb", color = color))
     return render.Stack(
         children = [render.Box(width = diameter, height = diameter)] +
                    ring_pixels(diameter, pct / 100.0, color) + [
@@ -152,17 +154,30 @@ def main(config):
         return render.Root(child = render.Text(err))  # replaced in Task 8
 
     limits = limits_from(usage)[:3]
-    diameter = 26 if len(limits) == 2 else 20
-    rings = render.Row(
-        expanded = True,
-        main_align = "space_evenly",
-        children = [gauge(label, pct, diameter, True) for label, pct, _ in limits],
-    )
+    if len(limits) > 2:
+        body = render.Column(children = [
+            render.Row(
+                expanded = True,
+                main_align = "space_evenly",
+                children = [gauge(l, p, 20, False) for l, p, _ in limits],
+            ),
+            render.Row(
+                expanded = True,
+                main_align = "space_evenly",
+                children = [render.Text(l, font = "tom-thumb", color = "#888") for l, _, _ in limits],
+            ),
+        ])
+    else:
+        body = render.Row(
+            expanded = True,
+            main_align = "space_evenly",
+            children = [gauge(label, pct, 26, True) for label, pct, _ in limits],
+        )
     return render.Root(
         child = render.Column(
             expanded = True,
             main_align = "end",
-            children = [rings],
+            children = [body],
         ),
     )
 
