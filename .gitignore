@@ -1,2 +1,3 @@
 *.webp
 *.gif
+__pycache__/
