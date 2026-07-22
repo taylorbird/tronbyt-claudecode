@@ -53,5 +53,10 @@ Response (token redacted, verbatim otherwise):
 
 - Claude Code **access token** (from Keychain `Claude Code-credentials`):
   works — HTTP 200. But it expires and rotates; not suitable for app config.
-- **`claude setup-token` long-lived token (`sk-ant-oat01-…`)**: verification
-  pending (step 2 of Task 2).
+- **`claude setup-token` long-lived token (`sk-ant-oat01-…`)**: does NOT
+  work — HTTP 403, `permission_error: OAuth token does not meet scope
+  requirement user:profile` (verified 2026-07-22). The app therefore uses the
+  fallback auth path from the design doc: `scripts/get_token.py` performs a
+  one-time PKCE login requesting the `user:profile` scope on a separate grant,
+  and the app refreshes the access token in Starlark, persisting rotated
+  tokens via cache.
