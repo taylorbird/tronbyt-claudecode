@@ -49,6 +49,19 @@ Response (token redacted, verbatim otherwise):
 5. Ring labels: `session` → `5H`, `weekly_all` → `WK`, `weekly_scoped` →
    first two letters of `scope.model.display_name`, uppercased (e.g. `FA`).
 
+## Open items to verify against live behavior
+
+- **Refresh-token rotation semantics** (unverified): if Anthropic invalidates
+  the previous refresh token on rotation, then losing the pixlet cache after
+  the first rotation strands auth (config token already superseded) and the
+  user must re-run `scripts/get_token.py`. During the live run, refresh twice
+  with the same token to observe whether the old one stays valid.
+- **Cache scoping** (unverified): if tronbyt-server shares `cache.star` state
+  across installations of the same app, two installs with different accounts
+  would collide on the fixed cache keys. Single-install deployments are
+  unaffected. If multi-install matters later, suffix keys with a hash of the
+  configured refresh token.
+
 ## Token types
 
 - Claude Code **access token** (from Keychain `Claude Code-credentials`):

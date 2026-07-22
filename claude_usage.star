@@ -80,10 +80,19 @@ def get_access_token(config):
             body = res.body()
             break
         last_status = res.status_code
-        if res.status_code in (400, 401, 403):
+
+        # RFC 6749: a dead/revoked refresh token is 400 invalid_grant. Other
+        # 400s mean the request shape is wrong — re-login won't fix those, so
+        # surface the status instead of claiming the token expired.
+        if res.status_code in (401, 403) or (res.status_code == 400 and "invalid_grant" in res.body()):
             saw_auth_reject = True
     if body == None:
         if saw_auth_reject:
+            # A dead cached refresh token must not shadow a freshly configured
+            # one for 90 days. Clear it (unless a concurrent render already
+            # rotated in a newer one) so the next render falls back to config.
+            if cache.get(REFRESH_KEY) == rt:
+                cache.set(REFRESH_KEY, "", ttl_seconds = 1)
             return None, "expired"
         return None, "auth http %d" % last_status
 
