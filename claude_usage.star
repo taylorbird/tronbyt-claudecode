@@ -77,6 +77,7 @@ def get_usage(config):
     return None, False, "http %d" % res.status_code
 
 TRACK_COLOR = "#222"
+LABEL_COLOR = "#888"
 
 def pct_color(pct):
     if pct >= 80:
@@ -108,7 +109,7 @@ def gauge(label, pct, diameter, show_label):
     color = pct_color(pct)
     lines = []
     if show_label:
-        lines.append(render.Text(label, font = "tom-thumb", color = "#888"))
+        lines.append(render.Text(label, font = "tom-thumb", color = LABEL_COLOR))
         lines.append(render.Text("%d%%" % pct, font = "tom-thumb", color = color))
     else:
         lines.append(render.Text("%d" % pct, font = "tom-thumb", color = color))
@@ -154,10 +155,15 @@ def limits_from(usage):
     pairs = [("5H", usage.get("five_hour")), ("WK", usage.get("seven_day"))]
     return [(label, int(l["utilization"]), l.get("resets_at")) for label, l in pairs if l and l.get("utilization") != None]
 
+# light shape check: time.parse_time crashes the applet on malformed input,
+# and Starlark has no try/except, so only parse RFC3339-looking strings
+def parseable_time(s):
+    return len(s) >= 19 and "T" in s and "-" in s
+
 def reset_row(limits):
     tightest = None
     for label, pct, resets_at in limits:
-        if resets_at and (tightest == None or pct > tightest[1]):
+        if resets_at and parseable_time(resets_at) and (tightest == None or pct > tightest[1]):
             tightest = (label, pct, resets_at)
     if tightest == None:
         return None
@@ -165,22 +171,42 @@ def reset_row(limits):
     total_m = int(d.minutes)
     if total_m < 0:
         total_m = 0
+
+    # starlark %d takes no width flags; pad manually
     mins = "%d" % (total_m % 60)
     if len(mins) < 2:
         mins = "0" + mins
     txt = "%s RST %dH%sM" % (tightest[0], total_m // 60, mins)
-    return render.Text(txt, font = "tom-thumb", color = "#888")
+    return render.Text(txt, font = "tom-thumb", color = LABEL_COLOR)
+
+def message_frame(title, body_text, color):
+    return render.Root(
+        child = render.Column(
+            expanded = True,
+            main_align = "center",
+            cross_align = "center",
+            children = [
+                render.Text(title, font = "tom-thumb", color = color),
+                render.Text(body_text, font = "tom-thumb", color = LABEL_COLOR),
+            ],
+        ),
+    )
 
 def main(config):
     if config.bool("self_test"):
         self_test()
 
-    # _stale is unused here; Task 8 consumes it (stale-data indicator).
-    usage, _stale, err = get_usage(config)
+    usage, stale, err = get_usage(config)
+    if err == "setup":
+        return message_frame("CLAUDE USAGE", "SETUP: ADD TOKEN", "#4CAF50")
+    if err == "expired":
+        return message_frame("CLAUDE USAGE", "TOKEN EXPIRED", "#F44336")
     if err:
-        return render.Root(child = render.Text(err))  # replaced in Task 8
+        return message_frame("CLAUDE USAGE", err.upper(), "#F44336")
 
     limits = limits_from(usage)[:3]
+    if not limits:
+        return message_frame("CLAUDE USAGE", "NO LIMITS", "#F44336")
     if len(limits) > 2:
         body = render.Row(
             expanded = True,
@@ -190,7 +216,7 @@ def main(config):
                     cross_align = "center",
                     children = [
                         gauge(label, pct, 20, False),
-                        render.Text(label, font = "tom-thumb", color = "#888"),
+                        render.Text(label, font = "tom-thumb", color = LABEL_COLOR),
                     ],
                 )
                 for label, pct, _ in limits
@@ -207,13 +233,17 @@ def main(config):
         row = reset_row(limits)
         if row != None:
             children = [row, body]
-    return render.Root(
-        child = render.Column(
-            expanded = True,
-            main_align = "end",
-            children = children,
-        ),
+    root_child = render.Column(
+        expanded = True,
+        main_align = "end",
+        children = children,
     )
+    if stale:
+        root_child = render.Stack(children = [
+            root_child,
+            render.Padding(pad = (63, 0, 0, 0), child = render.Box(width = 1, height = 1, color = "#FFC107")),
+        ])
+    return render.Root(child = root_child)
 
 def get_schema():
     return schema.Schema(
