@@ -6,31 +6,39 @@ load("http.star", "http")
 load("math.star", "math")
 load("render.star", "render")
 load("schema.star", "schema")
+load("time.star", "time")
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 USER_AGENT = "claude-code/2.1.9"
 LAST_GOOD_KEY = "claude_usage_last_good"
 
-def mock_usage(session_pct, weekly_pct, scoped = None):
+def iso(t):
+    return t.format("2006-01-02T15:04:05Z07:00")
+
+def mock_usage(session_pct, weekly_pct, session_reset, weekly_reset, scoped = None):
     limits = [
-        {"kind": "session", "group": "session", "percent": session_pct, "severity": "normal", "resets_at": "2026-07-22T20:00:00+00:00", "scope": None, "is_active": True},
-        {"kind": "weekly_all", "group": "weekly", "percent": weekly_pct, "severity": "normal", "resets_at": "2026-07-27T17:00:00+00:00", "scope": None, "is_active": False},
+        {"kind": "session", "group": "session", "percent": session_pct, "severity": "normal", "resets_at": session_reset, "scope": None, "is_active": True},
+        {"kind": "weekly_all", "group": "weekly", "percent": weekly_pct, "severity": "normal", "resets_at": weekly_reset, "scope": None, "is_active": False},
     ]
     if scoped != None:
-        limits.append({"kind": "weekly_scoped", "group": "weekly", "percent": scoped, "severity": "normal", "resets_at": "2026-07-27T17:00:00+00:00", "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}, "is_active": False})
+        limits.append({"kind": "weekly_scoped", "group": "weekly", "percent": scoped, "severity": "normal", "resets_at": weekly_reset, "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}, "is_active": False})
     return {
-        "five_hour": {"utilization": session_pct * 1.0, "resets_at": "2026-07-22T20:00:00+00:00"},
-        "seven_day": {"utilization": weekly_pct * 1.0, "resets_at": "2026-07-27T17:00:00+00:00"},
+        "five_hour": {"utilization": session_pct * 1.0, "resets_at": session_reset},
+        "seven_day": {"utilization": weekly_pct * 1.0, "resets_at": weekly_reset},
         "seven_day_opus": None,
         "limits": limits,
     }
 
-MOCKS = {
-    "happy": mock_usage(62, 31),
-    "high": mock_usage(95, 83),
-    "zero": mock_usage(0, 0),
-    "scoped": mock_usage(62, 31, scoped = 12),
-}
+def mock_presets():
+    now = time.now()
+    session_reset = iso(now + time.parse_duration("3h14m"))
+    weekly_reset = iso(now + time.parse_duration("124h"))
+    return {
+        "happy": mock_usage(62, 31, session_reset, weekly_reset),
+        "high": mock_usage(95, 83, session_reset, weekly_reset),
+        "zero": mock_usage(0, 0, session_reset, weekly_reset),
+        "scoped": mock_usage(62, 31, session_reset, weekly_reset, scoped = 12),
+    }
 
 # returns (usage dict or None, is_stale, error string or None)
 def get_usage(config):
@@ -43,7 +51,7 @@ def get_usage(config):
             return json.decode(cached), True, None
         return None, False, "no data"
     if mock:
-        return MOCKS[mock], False, None
+        return mock_presets()[mock], False, None
 
     token = config.str("token")
     if not token:
@@ -125,6 +133,8 @@ def self_test():
         fail("ring too sparse: %d px" % len(px))
     if pct_color(49) != "#4CAF50" or pct_color(50) != "#FFC107" or pct_color(80) != "#F44336":
         fail("pct_color thresholds wrong")
+    if time.parse_time("2026-07-27T16:59:59.538484+00:00").year != 2026:
+        fail("parse_time failed on fractional-second timestamp")
 
 def limit_label(entry):
     kind = entry.get("kind")
@@ -144,6 +154,23 @@ def limits_from(usage):
     pairs = [("5H", usage.get("five_hour")), ("WK", usage.get("seven_day"))]
     return [(label, int(l["utilization"]), l.get("resets_at")) for label, l in pairs if l and l.get("utilization") != None]
 
+def reset_row(limits):
+    tightest = None
+    for label, pct, resets_at in limits:
+        if resets_at and (tightest == None or pct > tightest[1]):
+            tightest = (label, pct, resets_at)
+    if tightest == None:
+        return None
+    d = time.parse_time(tightest[2]) - time.now()
+    total_m = int(d.minutes)
+    if total_m < 0:
+        total_m = 0
+    mins = "%d" % (total_m % 60)
+    if len(mins) < 2:
+        mins = "0" + mins
+    txt = "%s RST %dH%sM" % (tightest[0], total_m // 60, mins)
+    return render.Text(txt, font = "tom-thumb", color = "#888")
+
 def main(config):
     if config.bool("self_test"):
         self_test()
@@ -155,29 +182,36 @@ def main(config):
 
     limits = limits_from(usage)[:3]
     if len(limits) > 2:
-        body = render.Column(children = [
-            render.Row(
-                expanded = True,
-                main_align = "space_evenly",
-                children = [gauge(l, p, 20, False) for l, p, _ in limits],
-            ),
-            render.Row(
-                expanded = True,
-                main_align = "space_evenly",
-                children = [render.Text(l, font = "tom-thumb", color = "#888") for l, _, _ in limits],
-            ),
-        ])
+        body = render.Row(
+            expanded = True,
+            main_align = "space_evenly",
+            children = [
+                render.Column(
+                    cross_align = "center",
+                    children = [
+                        gauge(label, pct, 20, False),
+                        render.Text(label, font = "tom-thumb", color = "#888"),
+                    ],
+                )
+                for label, pct, _ in limits
+            ],
+        )
     else:
         body = render.Row(
             expanded = True,
             main_align = "space_evenly",
             children = [gauge(label, pct, 26, True) for label, pct, _ in limits],
         )
+    children = [body]
+    if config.bool("show_reset", True):
+        row = reset_row(limits)
+        if row != None:
+            children = [row, body]
     return render.Root(
         child = render.Column(
             expanded = True,
             main_align = "end",
-            children = [body],
+            children = children,
         ),
     )
 
