@@ -351,12 +351,27 @@ Expected now: still the single-ring/temporary output.
 
 Replace the temporary `main` body's success path:
 
+`limits_from` reads the verified `limits` array (primary source per
+docs/api-notes.md), falling back to the legacy top-level objects:
+
 ```starlark
+def limit_label(entry):
+    kind = entry.get("kind")
+    if kind == "session":
+        return "5H"
+    if kind == "weekly_all":
+        return "WK"
+    scope = entry.get("scope") or {}
+    model = scope.get("model") or {}
+    name = model.get("display_name") or "??"
+    return name[:2].upper()
+
 def limits_from(usage):
-    limits = [("5H", usage["five_hour"]), ("WK", usage["seven_day"])]
-    if "seven_day_opus" in usage:
-        limits.append(("OP", usage["seven_day_opus"]))
-    return [(label, int(l["utilization"]), l.get("resets_at")) for label, l in limits]
+    entries = usage.get("limits")
+    if entries:
+        return [(limit_label(e), int(e["percent"]), e.get("resets_at")) for e in entries]
+    pairs = [("5H", usage.get("five_hour")), ("WK", usage.get("seven_day"))]
+    return [(label, int(l["utilization"]), l.get("resets_at")) for label, l in pairs if l]
 
 def main(config):
     if config.bool("self_test"):
@@ -407,8 +422,10 @@ At 20px diameter the interior is too tight for two text lines, so 3-ring mode pu
 
 **Step 1: Failing render**
 
-Run: `pixlet render claude_usage.star dev_mock=opus -o /tmp/claude_usage/opus.gif --gif --magnify 8`
+Run: `pixlet render claude_usage.star dev_mock=scoped -o /tmp/claude_usage/scoped.gif --gif --magnify 8`
 Expected now: three rings but cramped/overflowing text — the defect this task fixes.
+(Preset renamed from the plan's original `opus`: the live API generalizes the
+third limit to `weekly_scoped` with a model display name — see docs/api-notes.md.)
 
 **Step 2: Implement**
 
@@ -481,7 +498,7 @@ Run: `pixlet render claude_usage.star dev_mock=happy -o /tmp/claude_usage/reset.
 Eyeball: top row like `5H RST 3H00M`, rings still fully visible below (no clipping).
 Run: `pixlet render claude_usage.star dev_mock=happy show_reset=false -o /tmp/claude_usage/noreset.gif --gif --magnify 8`
 Eyeball: no top row, rings bottom-anchored.
-Run: `pixlet render claude_usage.star dev_mock=opus -o /tmp/claude_usage/opus-reset.gif --gif --magnify 8`
+Run: `pixlet render claude_usage.star dev_mock=scoped -o /tmp/claude_usage/scoped-reset.gif --gif --magnify 8`
 Eyeball: 6+20+6 stack fits exactly.
 
 **Step 4: Commit**
