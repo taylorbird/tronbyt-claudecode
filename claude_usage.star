@@ -138,9 +138,9 @@ def limit_label(entry):
 def limits_from(usage):
     entries = usage.get("limits")
     if entries:
-        return [(limit_label(e), int(e["percent"]), e.get("resets_at")) for e in entries]
+        return [(limit_label(e), int(e["percent"]), e.get("resets_at")) for e in entries if e.get("percent") != None]
     pairs = [("5H", usage.get("five_hour")), ("WK", usage.get("seven_day"))]
-    return [(label, int(l["utilization"]), l.get("resets_at")) for label, l in pairs if l]
+    return [(label, int(l["utilization"]), l.get("resets_at")) for label, l in pairs if l and l.get("utilization") != None]
 
 def main(config):
     if config.bool("self_test"):
@@ -151,7 +151,7 @@ def main(config):
     if err:
         return render.Root(child = render.Text(err))  # replaced in Task 8
 
-    limits = limits_from(usage)
+    limits = limits_from(usage)[:3]
     diameter = 26 if len(limits) == 2 else 20
     rings = render.Row(
         expanded = True,
