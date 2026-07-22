@@ -96,6 +96,7 @@ def ring_pixels(diameter, frac, fill_color):
     ]
 
 def gauge(label, pct, diameter, show_label):
+    pct = min(max(pct, 0), 100)
     color = pct_color(pct)
     lines = []
     if show_label:
@@ -123,17 +124,47 @@ def self_test():
     if pct_color(49) != "#4CAF50" or pct_color(50) != "#FFC107" or pct_color(80) != "#F44336":
         fail("pct_color thresholds wrong")
 
+def limit_label(entry):
+    kind = entry.get("kind")
+    if kind == "session":
+        return "5H"
+    if kind == "weekly_all":
+        return "WK"
+    scope = entry.get("scope") or {}
+    model = scope.get("model") or {}
+    name = model.get("display_name") or "??"
+    return name[:2].upper()
+
+def limits_from(usage):
+    entries = usage.get("limits")
+    if entries:
+        return [(limit_label(e), int(e["percent"]), e.get("resets_at")) for e in entries]
+    pairs = [("5H", usage.get("five_hour")), ("WK", usage.get("seven_day"))]
+    return [(label, int(l["utilization"]), l.get("resets_at")) for label, l in pairs if l]
+
 def main(config):
     if config.bool("self_test"):
         self_test()
 
-    # _usage/_stale are unused in this temporary main; Task 5's ring layout consumes them.
-    _usage, _stale, err = get_usage(config)
+    # _stale is unused here; Task 8 consumes it (stale-data indicator).
+    usage, _stale, err = get_usage(config)
     if err:
-        return render.Root(child = render.Text(err))
+        return render.Root(child = render.Text(err))  # replaced in Task 8
 
-    # TEMPORARY single-gauge render for eyeballing geometry; Task 5 replaces main.
-    return render.Root(child = gauge("5H", 62, 26, True))
+    limits = limits_from(usage)
+    diameter = 26 if len(limits) == 2 else 20
+    rings = render.Row(
+        expanded = True,
+        main_align = "space_evenly",
+        children = [gauge(label, pct, diameter, True) for label, pct, _ in limits],
+    )
+    return render.Root(
+        child = render.Column(
+            expanded = True,
+            main_align = "end",
+            children = [rings],
+        ),
+    )
 
 def get_schema():
     return schema.Schema(
