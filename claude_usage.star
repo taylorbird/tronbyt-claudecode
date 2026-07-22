@@ -3,6 +3,7 @@
 load("cache.star", "cache")
 load("encoding/json.star", "json")
 load("http.star", "http")
+load("math.star", "math")
 load("render.star", "render")
 load("schema.star", "schema")
 
@@ -67,15 +68,72 @@ def get_usage(config):
         return json.decode(cached), True, None
     return None, False, "http %d" % res.status_code
 
+TRACK_COLOR = "#222"
+
+def pct_color(pct):
+    if pct >= 80:
+        return "#F44336"
+    if pct >= 50:
+        return "#FFC107"
+    return "#4CAF50"
+
+# plots a 2px-thick ring, filled clockwise from 12 o'clock up to frac
+def ring_pixels(diameter, frac, fill_color):
+    c = (diameter - 1) / 2.0
+    pixels = {}
+    for radius in [c, c - 1]:
+        steps = int(radius * 8)
+        for i in range(steps):
+            f = i / float(steps)
+            x = int(c + radius * math.sin(f * 2 * math.pi) + 0.5)
+            y = int(c - radius * math.cos(f * 2 * math.pi) + 0.5)
+            color = fill_color if f < frac else TRACK_COLOR
+            if (x, y) not in pixels:
+                pixels[(x, y)] = color
+    return [
+        render.Padding(pad = (x, y, 0, 0), child = render.Box(width = 1, height = 1, color = color))
+        for (x, y), color in pixels.items()
+    ]
+
+def gauge(label, pct, diameter, show_label):
+    color = pct_color(pct)
+    lines = []
+    if show_label:
+        lines.append(render.Text(label, font = "tom-thumb", color = "#888"))
+    lines.append(render.Text("%d%%" % pct, font = "tom-thumb", color = color))
+    return render.Stack(
+        children = [render.Box(width = diameter, height = diameter)] +
+                   ring_pixels(diameter, pct / 100.0, color) + [
+            render.Box(
+                width = diameter,
+                height = diameter,
+                child = render.Column(
+                    main_align = "center",
+                    cross_align = "center",
+                    children = lines,
+                ),
+            ),
+        ],
+    )
+
+def self_test():
+    px = ring_pixels(26, 1.0, "#fff")
+    if len(px) < 100:
+        fail("ring too sparse: %d px" % len(px))
+    if pct_color(49) != "#4CAF50" or pct_color(50) != "#FFC107" or pct_color(80) != "#F44336":
+        fail("pct_color thresholds wrong")
+
 def main(config):
-    # _stale is unused in this temporary main; Task 5's ring layout consumes it.
-    usage, _stale, err = get_usage(config)
+    if config.bool("self_test"):
+        self_test()
+
+    # _usage/_stale are unused in this temporary main; Task 5's ring layout consumes them.
+    _usage, _stale, err = get_usage(config)
     if err:
         return render.Root(child = render.Text(err))
-    return render.Root(child = render.Text("5H %d WK %d" % (
-        int(usage["five_hour"]["utilization"]),
-        int(usage["seven_day"]["utilization"]),
-    )))
+
+    # TEMPORARY single-gauge render for eyeballing geometry; Task 5 replaces main.
+    return render.Root(child = gauge("5H", 62, 26, True))
 
 def get_schema():
     return schema.Schema(
