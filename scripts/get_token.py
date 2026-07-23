@@ -73,7 +73,12 @@ def post_json(url, payload):
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Cloudflare rejects urllib's default UA with "error code: 1010".
+            "User-Agent": "claude-code/2.1.9",
+        },
         method="POST",
     )
     try:

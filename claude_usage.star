@@ -70,6 +70,11 @@ def get_access_token(config):
     for url in TOKEN_URLS:
         res = http.post(
             url,
+            headers = {
+                "Accept": "application/json",
+                # Cloudflare rejects default client UAs with "error code: 1010".
+                "User-Agent": USER_AGENT,
+            },
             json_body = {
                 "grant_type": "refresh_token",
                 "refresh_token": rt,
