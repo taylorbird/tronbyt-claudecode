@@ -15,6 +15,7 @@ import hashlib
 import json
 import secrets
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -106,13 +107,21 @@ def exchange_code(code, state, verifier):
         "redirect_uri": REDIRECT_URI,
         "code_verifier": verifier,
     }
+    # The token endpoints intermittently 429; a 429 does not consume the
+    # single-use code, so retry in place with backoff before giving up.
+    backoffs = [10, 20, 40]
     for url in TOKEN_URLS:
-        print("Exchanging code at %s ..." % url)
-        status, body = post_json(url, payload)
-        if status == 200 and isinstance(body, dict):
-            return body
-        print("  FAILED: HTTP %s" % status)
-        print("  Response body: %s" % (json.dumps(body) if isinstance(body, dict) else body))
+        for attempt in range(len(backoffs) + 1):
+            print("Exchanging code at %s (attempt %d) ..." % (url, attempt + 1))
+            status, body = post_json(url, payload)
+            if status == 200 and isinstance(body, dict):
+                return body
+            print("  FAILED: HTTP %s" % status)
+            print("  Response body: %s" % (json.dumps(body) if isinstance(body, dict) else body))
+            if status != 429 or attempt == len(backoffs):
+                break
+            print("  Rate limited; retrying in %ds ..." % backoffs[attempt])
+            time.sleep(backoffs[attempt])
     sys.exit("Token exchange failed at all endpoints (see bodies above).")
 
 
