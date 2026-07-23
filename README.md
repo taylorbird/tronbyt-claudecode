@@ -27,25 +27,37 @@ network. The Pixlet app fetches that URL — no secrets on the Tronbyt.
 Claude Code keychain ──> scripts/serve_usage.py ──> http://mac:8377/usage.json ──> claude_usage.star
 ```
 
-## Setup
+## Setup (push model — recommended)
 
-1. **Run the companion** on the Mac where you use Claude Code:
+Networks with client isolation often block the Tronbyt box from reaching
+your Mac. The push model needs only *outbound* connections from the Mac:
+render locally, push the frame to tronbyt-server's Tidbyt-compatible API.
+
+1. **Run the companion** on the Mac where you use Claude Code (localhost
+   only is fine in this model):
 
    ```
-   python3 scripts/serve_usage.py --bind 0.0.0.0 --port 8377
+   python3 scripts/serve_usage.py
    ```
 
-   Stdlib only, no dependencies. `--bind 0.0.0.0` lets a tronbyt-server on
-   another box reach it; it serves only usage percentages, no secrets.
-   To keep it running across reboots, wrap it in a launchd agent (or just
-   leave it in a tmux pane).
+2. **Push on a schedule** with `scripts/render_push.sh`:
 
-2. **Install the app**: upload `claude_usage.star` as a custom app in the
-   Tronbyt web UI.
+   ```
+   TRONBYT_URL=http://<tronbyt-server>:8100 DEVICE_ID=<id> API_KEY=<key> \
+       scripts/render_push.sh
+   ```
 
-3. **Configure**: set **Data URL** to `http://<your-mac>:8377/usage.json`.
+   Wrap both in launchd agents to keep them running (StartInterval 60 for
+   the push; keep the API key in the plist, not in the repo).
 
-The display shows `SET DATA URL` until step 3, `TOKEN EXPIRED`/`HTTP n`
+## Setup (server-side render — if the server can reach your Mac)
+
+1. Run the companion with `--bind 0.0.0.0 --port 8377` (serves only usage
+   percentages, no secrets).
+2. Upload `claude_usage.star` as a custom app in the Tronbyt web UI.
+3. Set its **Data URL** config to `http://<your-mac>:8377/usage.json`.
+
+The display shows `SET DATA URL` until configured, `TOKEN EXPIRED`/`HTTP n`
 frames if the companion can't reach Anthropic, and keeps rendering cached
 numbers (with the amber stale pixel) through short outages.
 
