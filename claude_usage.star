@@ -10,6 +10,9 @@ load("time.star", "time")
 
 LAST_GOOD_KEY = "claude_usage_last_good"
 
+# used when the device/config provides no $tz
+DEFAULT_TZ = "America/Los_Angeles"
+
 def iso(t):
     return t.format("2006-01-02T15:04:05Z07:00")
 
@@ -151,24 +154,49 @@ def limits_from(usage):
 def parseable_time(s):
     return len(s) >= 19 and "T" in s and "-" in s
 
-def reset_row(limits):
-    tightest = None
-    for label, pct, resets_at in limits:
-        if resets_at and parseable_time(resets_at) and (tightest == None or pct > tightest[1]):
-            tightest = (label, pct, resets_at)
-    if tightest == None:
-        return None
-    d = time.parse_time(tightest[2]) - time.now()
+def countdown_text(d):
     total_m = int(d.minutes)
     if total_m < 0:
         total_m = 0
+    if total_m >= 24 * 60:
+        return "%dD" % (total_m // (24 * 60))
 
     # starlark %d takes no width flags; pad manually
     mins = "%d" % (total_m % 60)
     if len(mins) < 2:
         mins = "0" + mins
-    txt = "%s RST %dH%sM" % (tightest[0], total_m // 60, mins)
-    return render.Text(txt, font = "tom-thumb", color = LABEL_COLOR)
+    return "%dH%sM" % (total_m // 60, mins)
+
+# one animation frame per limit: local reset clock time plus countdown,
+# e.g. "5H 23:29(1H22M)" / "WK MON 17:00(4D)" (>=24h out gets a weekday).
+# Emphasis: tom-thumb (the only font fitting the 6px row) has no bold, so
+# the label is white against the gray remainder instead.
+def reset_frames(limits, tz):
+    now = time.now()
+    frames = []
+    for label, _, resets_at in limits:
+        if not resets_at or not parseable_time(resets_at):
+            continue
+        t = time.parse_time(resets_at).in_location(tz)
+        if int((t - now).hours) >= 24:
+            when = t.format("Mon 15:04").upper()
+        else:
+            when = t.format("15:04")
+        frames.append(render.Row(children = [
+            render.Text(label + " ", font = "tom-thumb", color = "#FFFFFF"),
+            render.Text("%s(%s)" % (when, countdown_text(t - now)), font = "tom-thumb", color = LABEL_COLOR),
+        ]))
+    return frames
+
+def reset_row(limits, tz):
+    # session + weekly cover the distinct reset times; a scoped weekly limit
+    # resets together with the weekly one, so skip it to avoid duplicates
+    frames = reset_frames([l for l in limits if l[0] in ("5H", "WK")], tz)
+    if not frames:
+        return None
+    if len(frames) == 1:
+        return frames[0]
+    return render.Animation(children = frames)
 
 def message_frame(title, body_text, color):
     return render.Root(
@@ -221,7 +249,7 @@ def main(config):
         )
     children = [body]
     if config.bool("show_reset", True):
-        row = reset_row(limits)
+        row = reset_row(limits, config.get("$tz") or DEFAULT_TZ)
         if row != None:
             children = [row, body]
     root_child = render.Column(
@@ -234,7 +262,9 @@ def main(config):
             root_child,
             render.Padding(pad = (63, 0, 0, 0), child = render.Box(width = 1, height = 1, color = "#FFC107")),
         ])
-    return render.Root(child = root_child)
+
+    # delay is per animation frame: the reset row alternates 5H/WK every 2.5s
+    return render.Root(delay = 2500, child = root_child)
 
 def get_schema():
     return schema.Schema(
