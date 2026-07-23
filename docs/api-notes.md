@@ -1,5 +1,12 @@
 # Usage endpoint — verified response shape
 
+> **Revision note (2026-07-22):** the app no longer calls this endpoint or
+> does OAuth itself. Anthropic's token-exchange endpoint persistently 429s
+> (community-wide; see opencode#18329), so auth moved to a companion server
+> (`scripts/serve_usage.py`) that reads Claude Code's own Keychain
+> credentials and republishes the usage JSON verbatim. Everything below
+> about the response shape still applies — the app parses the same JSON.
+
 Verified 2026-07-21 with a live call (Claude Code access token from the macOS
 Keychain). `GET https://api.anthropic.com/api/oauth/usage` with headers
 `Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`,
