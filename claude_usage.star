@@ -8,20 +8,7 @@ load("render.star", "render")
 load("schema.star", "schema")
 load("time.star", "time")
 
-USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
-USER_AGENT = "claude-code/2.1.9"
 LAST_GOOD_KEY = "claude_usage_last_good"
-
-# Token refresh: same public client id and candidate token endpoints as
-# scripts/get_token.py (community docs disagree on which URL is current,
-# so try both in order).
-TOKEN_URLS = [
-    "https://console.anthropic.com/v1/oauth/token",
-    "https://platform.claude.com/v1/oauth/token",
-]
-CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-ACCESS_KEY = "claude_usage_access_token"
-REFRESH_KEY = "claude_usage_refresh_token"
 
 def iso(t):
     return t.format("2006-01-02T15:04:05Z07:00")
@@ -51,68 +38,10 @@ def mock_presets():
         "scoped": mock_usage(62, 31, session_reset, weekly_reset, scoped = 12),
     }
 
-# returns (access_token or None, error string or None). Refreshes via the
-# OAuth refresh token from config (or a rotated one persisted in cache).
-def get_access_token(config):
-    access = cache.get(ACCESS_KEY)
-    if access:
-        return access, None
-
-    # Prefer a rotated refresh token from cache: Anthropic rotates refresh
-    # tokens on use, so the config value may have been superseded.
-    rt = cache.get(REFRESH_KEY) or config.str("refresh_token")
-    if not rt:
-        return None, "setup"
-
-    body = None
-    last_status = 0
-    saw_auth_reject = False
-    for url in TOKEN_URLS:
-        res = http.post(
-            url,
-            headers = {
-                "Accept": "application/json",
-                # Cloudflare rejects default client UAs with "error code: 1010".
-                "User-Agent": USER_AGENT,
-            },
-            json_body = {
-                "grant_type": "refresh_token",
-                "refresh_token": rt,
-                "client_id": CLIENT_ID,
-            },
-        )
-        if res.status_code == 200:
-            body = res.body()
-            break
-        last_status = res.status_code
-
-        # RFC 6749: a dead/revoked refresh token is 400 invalid_grant. Other
-        # 400s mean the request shape is wrong — re-login won't fix those, so
-        # surface the status instead of claiming the token expired.
-        if res.status_code in (401, 403) or (res.status_code == 400 and "invalid_grant" in res.body()):
-            saw_auth_reject = True
-    if body == None:
-        if saw_auth_reject:
-            # A dead cached refresh token must not shadow a freshly configured
-            # one for 90 days. Clear it (unless a concurrent render already
-            # rotated in a newer one) so the next render falls back to config.
-            if cache.get(REFRESH_KEY) == rt:
-                cache.set(REFRESH_KEY, "", ttl_seconds = 1)
-            return None, "expired"
-        return None, "auth http %d" % last_status
-
-    data = json.decode(body)
-    access = data.get("access_token")
-    if not access:
-        return None, "expired"
-    ttl = max(int(data.get("expires_in") or 3600) - 300, 60)
-    cache.set(ACCESS_KEY, access, ttl_seconds = ttl)
-    rotated = data.get("refresh_token")
-    if rotated:
-        cache.set(REFRESH_KEY, rotated, ttl_seconds = 60 * 60 * 24 * 90)
-    return access, None
-
 # returns (usage dict or None, is_stale, error string or None)
+#
+# Auth lives in the companion (scripts/serve_usage.py), which republishes
+# the Anthropic usage JSON verbatim; the app just fetches that URL.
 def get_usage(config):
     mock = config.str("dev_mock")
     if mock == "expired":
@@ -125,28 +54,14 @@ def get_usage(config):
     if mock:
         return mock_presets()[mock], False, None
 
-    token, err = get_access_token(config)
-    if err:
-        return None, False, err
+    url = config.str("data_url")
+    if not url:
+        return None, False, "setup"
 
-    res = http.get(
-        USAGE_URL,
-        headers = {
-            "Authorization": "Bearer " + token,
-            "anthropic-beta": "oauth-2025-04-20",
-            "User-Agent": USER_AGENT,
-        },
-        ttl_seconds = 120,
-    )
+    res = http.get(url, ttl_seconds = 60)
     if res.status_code == 200:
         cache.set(LAST_GOOD_KEY, res.body(), ttl_seconds = 86400)
         return json.decode(res.body()), False, None
-    if res.status_code in (401, 403):
-        # The cached access token was rejected: invalidate it so the NEXT
-        # render re-refreshes. Deliberately no retry loop within one render;
-        # a single render stays bounded and the app cycles frequently anyway.
-        cache.set(ACCESS_KEY, "", ttl_seconds = 1)
-        return None, False, "expired"
     cached = cache.get(LAST_GOOD_KEY)
     if cached:
         return json.decode(cached), True, None
@@ -274,7 +189,7 @@ def main(config):
 
     usage, stale, err = get_usage(config)
     if err == "setup":
-        return message_frame("CLAUDE USAGE", "RUN GET_TOKEN", "#4CAF50")
+        return message_frame("CLAUDE USAGE", "SET DATA URL", "#4CAF50")
     if err == "expired":
         return message_frame("CLAUDE USAGE", "TOKEN EXPIRED", "#F44336")
     if err:
@@ -326,10 +241,10 @@ def get_schema():
         version = "1",
         fields = [
             schema.Text(
-                id = "refresh_token",
-                name = "Refresh token",
-                desc = "From scripts/get_token.py",
-                icon = "key",
+                id = "data_url",
+                name = "Data URL",
+                desc = "usage.json URL served by scripts/serve_usage.py",
+                icon = "link",
             ),
             schema.Toggle(
                 id = "show_reset",
