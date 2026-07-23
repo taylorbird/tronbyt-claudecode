@@ -72,6 +72,10 @@ def get_usage(config):
 
 TRACK_COLOR = "#222"
 LABEL_COLOR = "#888"
+DAY_COLOR = "#4FC3F7"
+
+# red screen border once the session or weekly limit reaches this
+ALERT_PCT = 90
 
 def pct_color(pct):
     if pct >= 80:
@@ -178,14 +182,11 @@ def reset_frames(limits, tz):
         if not resets_at or not parseable_time(resets_at):
             continue
         t = time.parse_time(resets_at).in_location(tz)
+        parts = [render.Text(label + " ", font = "tom-thumb", color = "#FFFFFF")]
         if int((t - now).hours) >= 24:
-            when = t.format("Mon 15:04").upper()
-        else:
-            when = t.format("15:04")
-        frames.append(render.Row(children = [
-            render.Text(label + " ", font = "tom-thumb", color = "#FFFFFF"),
-            render.Text("%s(%s)" % (when, countdown_text(t - now)), font = "tom-thumb", color = LABEL_COLOR),
-        ]))
+            parts.append(render.Text(t.format("Mon").upper() + " ", font = "tom-thumb", color = DAY_COLOR))
+        parts.append(render.Text("%s(%s)" % (t.format("15:04"), countdown_text(t - now)), font = "tom-thumb", color = LABEL_COLOR))
+        frames.append(render.Row(children = parts))
     return frames
 
 def reset_row(limits, tz):
@@ -197,6 +198,16 @@ def reset_row(limits, tz):
     if len(frames) == 1:
         return frames[0]
     return render.Animation(children = frames)
+
+def alert_border(child):
+    red = "#F44336"
+    return render.Stack(children = [
+        child,
+        render.Box(width = 64, height = 1, color = red),
+        render.Padding(pad = (0, 31, 0, 0), child = render.Box(width = 64, height = 1, color = red)),
+        render.Box(width = 1, height = 32, color = red),
+        render.Padding(pad = (63, 0, 0, 0), child = render.Box(width = 1, height = 32, color = red)),
+    ])
 
 def message_frame(title, body_text, color):
     return render.Root(
@@ -251,12 +262,16 @@ def main(config):
     if config.bool("show_reset", True):
         row = reset_row(limits, config.get("$tz") or DEFAULT_TZ)
         if row != None:
-            children = [row, body]
+            children = [render.Box(width = 64, height = 6, child = row), body]
     root_child = render.Column(
         expanded = True,
         main_align = "end",
         children = children,
     )
+    for label, pct, _ in limits:
+        if label in ("5H", "WK") and pct >= ALERT_PCT:
+            root_child = alert_border(root_child)
+            break
     if stale:
         root_child = render.Stack(children = [
             root_child,
