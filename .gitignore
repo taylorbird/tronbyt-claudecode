@@ -2,3 +2,10 @@
 *.gif
 !docs/images/*.gif
 __pycache__/
+
+# Claude Code work state (optional - remove if you want to track)
+# .claude/work/
+
+# Docker deployment secrets — never commit
+docker/.env
+docker/creds/

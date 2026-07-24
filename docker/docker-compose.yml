@@ -1,0 +1,51 @@
+# Two services from one image:
+#   companion — reads/refreshes the OAuth token from ./creds/credentials.json
+#               and serves the usage JSON on the internal network.
+#   pusher    — renders claude_usage.star every PUSH_INTERVAL seconds and pushes
+#               the frame to the tronbyt-server.
+#
+# Only the companion sees the credentials; only the pusher sees the API key.
+# Copy .env.example to .env and drop your credentials.json in ./creds/ first
+# (see README.md).
+
+# The image is published at docker.io/taylorlbird/claude-usage. On the Pi just
+# `docker compose pull && docker compose up -d`. To rebuild it yourself instead
+# of pulling, uncomment the `build:` block on the companion service and run
+# `docker compose up -d --build`.
+services:
+  companion:
+    image: taylorlbird/claude-usage:latest
+    # build:
+    #   context: ..
+    #   dockerfile: docker/Dockerfile
+    command:
+      - python3
+      - scripts/serve_usage.py
+      - --creds-file
+      - /creds/credentials.json
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "8377"
+      - --interval
+      - "120"
+    volumes:
+      # Writable: rotated refresh tokens are persisted back here across restarts.
+      - ./creds:/creds
+    restart: unless-stopped
+
+  pusher:
+    image: taylorlbird/claude-usage:latest
+    depends_on:
+      - companion
+    environment:
+      TRONBYT_URL: ${TRONBYT_URL}
+      DEVICE_ID: ${DEVICE_ID}
+      API_KEY: ${API_KEY}
+      INSTALL_ID: ${INSTALL_ID:-claudeusage}
+      DATA_URL: http://companion:8377/usage.json
+    command:
+      - sh
+      - -c
+      - 'while true; do scripts/render_push.sh || echo "push failed"; sleep ${PUSH_INTERVAL:-60}; done'
+    restart: unless-stopped

@@ -1,0 +1,13 @@
+# Keep secrets and cruft out of the build context entirely. The Dockerfile only
+# COPYs claude_usage.star and scripts/, but this is defense in depth (and a
+# smaller, faster build context).
+.git
+.gitignore
+.claude
+docker/.env
+docker/creds
+**/__pycache__
+*.webp
+*.gif
+docs
+.starcache

@@ -12,7 +12,8 @@ Keychain). `GET https://api.anthropic.com/api/oauth/usage` with headers
 `Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`,
 `User-Agent: claude-code/2.1.9` → **HTTP 200**.
 
-Response (token redacted, verbatim otherwise):
+Response (token redacted; personal spend figures replaced with placeholder
+values — the `1234` numbers below are illustrative, not real):
 
 ```json
 {
@@ -29,13 +30,13 @@ Response (token redacted, verbatim otherwise):
   "nimbus_quill": null,
   "cinder_cove": null,
   "amber_ladder": null,
-  "extra_usage": {"is_enabled": true, "monthly_limit": null, "used_credits": 20847.0, "utilization": null, "currency": "USD", "decimal_places": 2, "disabled_reason": null, "daily": null, "weekly": null},
+  "extra_usage": {"is_enabled": true, "monthly_limit": null, "used_credits": 1234.0, "utilization": null, "currency": "USD", "decimal_places": 2, "disabled_reason": null, "daily": null, "weekly": null},
   "limits": [
     {"kind": "session", "group": "session", "percent": 47, "severity": "normal", "resets_at": "2026-07-21T23:29:59.538465+00:00", "scope": null, "is_active": true},
     {"kind": "weekly_all", "group": "weekly", "percent": 13, "severity": "normal", "resets_at": "2026-07-27T16:59:59.538484+00:00", "scope": null, "is_active": false},
     {"kind": "weekly_scoped", "group": "weekly", "percent": 14, "severity": "normal", "resets_at": "2026-07-27T16:59:59.538712+00:00", "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}, "is_active": false}
   ],
-  "spend": {"used": {"amount_minor": 20847, "currency": "USD", "exponent": 2}, "limit": null, "percent": 0, "severity": "normal", "enabled": true, "disabled_reason": null, "cap": null, "balance": null, "auto_reload": null, "disclaimer": "...", "can_purchase_credits": false, "can_toggle": false},
+  "spend": {"used": {"amount_minor": 1234, "currency": "USD", "exponent": 2}, "limit": null, "percent": 0, "severity": "normal", "enabled": true, "disabled_reason": null, "cap": null, "balance": null, "auto_reload": null, "disclaimer": "...", "can_purchase_credits": false, "can_toggle": false},
   "member_dashboard_available": false
 }
 ```
