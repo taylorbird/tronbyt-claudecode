@@ -115,13 +115,29 @@ Set in `docker/.env` (see `.env.example`):
 | `TRONBYT_URL`             | tronbyt-server base URL                          | —             |
 | `DEVICE_ID`               | target device id                                 | —             |
 | `API_KEY`                 | device API key (secret)                          | —             |
-| `CLAUDE_CREDENTIALS_JSON` | Claude credential blob, seeds the volume (secret)| —             |
+| `CLAUDE_OAUTH_TOKEN`      | **preferred** — long-lived token from `claude setup-token` (secret) | — |
+| `CLAUDE_CREDENTIALS_JSON` | fallback credential blob, seeds the volume (secret)| —            |
 | `INSTALL_ID`              | installation id in the device's app rotation     | `claudeusage` |
 | `PUSH_INTERVAL`           | seconds between renders/pushes                    | `60`          |
 
-The rotating credential lives in the `claude-creds` named volume (mounted at
-`/config`); Docker manages it. To force a clean re-seed, `docker compose down -v`
-removes it.
+**Prefer `CLAUDE_OAUTH_TOKEN`.** Mint one on a machine where you're logged in:
+
+```bash
+claude setup-token          # prints a long-lived token
+```
+
+Put it in `.env` as `CLAUDE_OAUTH_TOKEN=` and leave `CLAUDE_CREDENTIALS_JSON`
+empty. The companion then uses that token verbatim and **never refreshes**, so
+the refresh grant — which is rate limited in practice, returning HTTP 429 for any
+request from a throttled IP regardless of whether the token is valid — is never
+in the path. It also removes the token-rotation conflict with a Mac running
+Claude Code, since nothing rotates. If that token is ever revoked you get a clear
+`401`/`403` in the logs telling you to mint a new one, rather than a retry loop.
+
+`CLAUDE_CREDENTIALS_JSON` remains supported for the refresh-based mode. Its
+rotating credential lives in the `claude-creds` named volume (mounted at
+`/config`); Docker manages it. A newer value pasted into `.env` is adopted on the
+next start without a refresh; `docker compose down -v` forces a clean re-seed.
 
 Build-time (in `Dockerfile`, override with `--build-arg`):
 
@@ -134,8 +150,16 @@ Build-time (in `Dockerfile`, override with `--build-arg`):
 
 ## Troubleshooting
 
+- **Display reads `STALE <age>` with a reason (`RATE LIMIT` / `AUTH DEAD`)** —
+  the last successful fetch is older than 15 minutes, so the app hides the
+  percentages rather than showing a frozen reading. An amber border instead means
+  only a few minutes behind. The companion reports its own staleness in the
+  served JSON under `_companion`; `curl 127.0.0.1:8377/usage.json` shows it.
 - **Logs show a `429` refresh error** — the refresh grant was rate-limited (see
-  "known risk"). Paste a fresh `CLAUDE_CREDENTIALS_JSON` and `docker compose up -d`.
+  "known risk"). The companion backs off on consecutive failures (1m → 5m → 15m
+  → 30m → 1h, honoring `Retry-After`) rather than retrying every fetch tick, so
+  it stops adding to the throttle. To recover now, paste a fresh
+  `CLAUDE_CREDENTIALS_JSON` and `docker compose up -d`.
 - **`refresh token rejected` / `invalid_grant`** — the stored token is dead,
   usually rotated elsewhere (e.g. your Mac's Claude Code). Paste a current value
   into `.env` and `docker compose up -d`; it reseeds from it automatically.

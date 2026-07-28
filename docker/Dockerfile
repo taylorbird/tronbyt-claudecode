@@ -26,7 +26,8 @@ WORKDIR /app
 COPY claude_usage.star ./claude_usage.star
 COPY scripts/ ./scripts/
 RUN chmod +x scripts/render_push.sh \
-    && pixlet render /app/claude_usage.star dev_mock=happy -o /tmp/smoke.webp \
+    && python3 -m py_compile scripts/serve_usage.py \
+    && pixlet render /app/claude_usage.star dev_mock=happy self_test=true -o /tmp/smoke.webp \
     && rm /tmp/smoke.webp
 
 # pixlet lives on PATH here; render_push.sh honours PIXLET_BIN.

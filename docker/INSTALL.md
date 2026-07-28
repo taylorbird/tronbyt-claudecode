@@ -170,10 +170,19 @@ Run these from `~/claude-usage/`:
 
 - **`no matching manifest` / `exec format error`** — the computer is `amd64`;
   this image is `arm64`. Ask for a multi-arch image.
-- **Logs show a `429` refresh error and the display goes stale** — the token
-  refresh was rate-limited (a known, unresolved Anthropic issue for headless
-  refresh). Get a fresh value (Step 2), update `CLAUDE_CREDENTIALS_JSON` in
-  `.env`, and run `docker compose up -d` again.
+- **The display reads `STALE 2H0M` / `RATE LIMIT`** — the container hasn't been
+  able to fetch new numbers for that long, and the reason is on the second line
+  (`RATE LIMIT` = throttled token refresh, `AUTH DEAD` = the token was rejected).
+  The percentages are deliberately hidden once they're this old, because they
+  would otherwise look current. Recovery is the same as the `429` bullet below.
+- **An amber border around the gauges** — the numbers are a few minutes behind
+  (a fetch or two failed). It usually clears on its own; if it turns into a
+  `STALE …` screen, follow the recovery below.
+- **Logs show a `429` refresh error** — the token refresh was rate-limited (a
+  known, unresolved Anthropic issue for headless refresh). The container now
+  backs off instead of retrying every couple of minutes, so give it a while
+  before intervening. To fix it now: get a fresh value (Step 2), update
+  `CLAUDE_CREDENTIALS_JSON` in `.env`, and run `docker compose up -d` again.
 - **`refresh token rejected` / `invalid_grant`** — the token was rotated
   somewhere else (for example your Mac's Claude Code used it). Do the same
   recovery: paste a fresh value into `.env` and `docker compose up -d`. The

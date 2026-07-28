@@ -16,7 +16,12 @@ services:
     #   context: ..
     #   dockerfile: docker/Dockerfile
     environment:
-      # The initial credential, pasted in like the API key. On first boot the
+      # PREFERRED: a long-lived token from `claude setup-token`. When set, this
+      # is used directly and nothing is ever refreshed — which keeps the
+      # rate-limited (HTTP 429) token endpoint out of the path entirely. Set this
+      # and you can leave CLAUDE_CREDENTIALS_JSON empty.
+      CLAUDE_OAUTH_TOKEN: ${CLAUDE_OAUTH_TOKEN:-}
+      # Fallback: the initial credential, pasted in like the API key. On first boot the
       # process seeds /config/credentials.json from this; after that the living,
       # rotated token lives in the volume and this value is only used to recover
       # if the stored token dies (see INSTALL.md).

@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """Companion server: republishes Claude usage limits for the Tronbyt app.
 
-Fetches https://api.anthropic.com/api/oauth/usage on an interval and serves
-the last good response verbatim at /usage.json. Point the Tronbyt app's
-"Data URL" config (or render_push.sh's DATA_URL) at
-http://<this-host>:<port>/usage.json.
+Fetches https://api.anthropic.com/api/oauth/usage on an interval and serves the
+last good response at /usage.json, with a "_companion" object added carrying the
+last successful fetch time and the current fetch error (the app uses it to show
+an error instead of stale percentages). Point the Tronbyt app's "Data URL" config
+(or render_push.sh's DATA_URL) at http://<this-host>:<port>/usage.json.
 
-Two credential sources:
+Three credential sources, in precedence order:
 
-  * macOS Keychain (default): reads Claude Code's OAuth access token from the
-    "Claude Code-credentials" item. Claude Code keeps that token fresh, so the
-    companion never has to refresh. Use this on a Mac where you run Claude Code.
+  * CLAUDE_OAUTH_TOKEN (preferred off-Mac): a long-lived token minted by
+    `claude setup-token`. Used verbatim as the bearer; nothing is ever refreshed.
+    This is the mode with no moving parts — the refresh grant below is rate
+    limited in practice (HTTP 429), which is what makes the other modes fragile.
+
+  * macOS Keychain (default when no env credential): reads Claude Code's OAuth
+    access token from the "Claude Code-credentials" item. Claude Code keeps that
+    token fresh, so the companion never has to refresh. Use this on a Mac where
+    you run Claude Code.
 
   * Credentials file (--creds-file): reads a .credentials.json holding an
     OAuth access + refresh token, refreshes the access token itself when it is
@@ -51,11 +58,32 @@ TOKEN_URLS = [
 # Refresh this many seconds before the access token's stated expiry.
 REFRESH_MARGIN = 300
 
+# Refresh failures must not become a retry storm. Without backoff, every fetch
+# tick (--interval, 120s by default) retries the refresh once the access token
+# has expired, which keeps hammering the token endpoint and sustains a 429.
+# Steps are per consecutive failure; the last one repeats.
+REFRESH_BACKOFF = [60, 300, 900, 1800, 3600]
+
+# Key under which the served JSON carries companion staleness metadata (see
+# _annotate). The Tronbyt app reads it so a frozen last-good copy is shown as an
+# error instead of as current percentages.
+COMPANION_KEY = "_companion"
+
 # Optional env var holding the initial credentials JSON (same shape as the
 # file). It SEEDS the writable creds file on first boot, so the credential can
 # be passed in like any other config value instead of transferring a file. The
 # living, rotated copy then lives in the (writable) --creds-file location.
 CREDS_ENV = "CLAUDE_CREDENTIALS_JSON"
+
+# A pre-minted bearer token, used verbatim with no refreshing.
+#
+# DOES NOT WORK with `claude setup-token`. Measured 2026-07-28: such a token
+# authenticates but the usage endpoint rejects it with
+#   403 permission_error: OAuth token does not meet scope requirement user:profile
+# and `setup-token` exposes no way to request wider scopes. Kept because it is
+# the right shape for any bearer that DOES carry user:profile, and because it
+# fails with that one clear line instead of a retry loop.
+STATIC_TOKEN_ENV = "CLAUDE_OAUTH_TOKEN"
 
 _state = {"body": None, "fetched_at": 0.0, "last_error": None}
 _lock = threading.Lock()
@@ -64,6 +92,9 @@ _lock = threading.Lock()
 # only one fetch thread refreshes at a time.
 _creds_file = None
 _creds_lock = threading.Lock()
+
+# Consecutive-failure backoff for token refresh (guarded by _creds_lock).
+_refresh_backoff = {"failures": 0, "next_at": 0.0, "last_error": None}
 
 
 def keychain_access_token():
@@ -101,6 +132,17 @@ def _save_creds(path, creds):
 
 class _InvalidGrant(Exception):
     """The refresh token was rejected (RFC 6749 invalid_grant) — it's dead."""
+
+
+class _RateLimited(Exception):
+    """The token endpoint returned HTTP 429. The credential may still be fine;
+    the account is being throttled (see anthropics/claude-code#38248), so the
+    only useful response is to wait. Carries Retry-After when the server sent
+    one (seconds), otherwise None."""
+
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def _ensure_creds_file(path):
@@ -154,6 +196,15 @@ def _do_refresh(path):
             # endpoint won't help. Signal so the caller can reseed from env.
             if e.code == 400 and "invalid_grant" in body:
                 raise _InvalidGrant(last_err)
+            # 429 => throttled. The endpoints share one account-level limit, so
+            # trying the fallback just doubles the request rate against it.
+            if e.code == 429:
+                retry_after = None
+                try:
+                    retry_after = int(e.headers.get("Retry-After"))
+                except (TypeError, ValueError):
+                    pass
+                raise _RateLimited(last_err, retry_after)
             continue
         except Exception as e:  # network hiccup: try the next endpoint
             last_err = str(e)
@@ -173,43 +224,133 @@ def _do_refresh(path):
     raise RuntimeError("token refresh failed at all endpoints: %s" % last_err)
 
 
-def refresh_tokens(path):
-    """Refresh and persist tokens. If the stored (rotated) refresh token is dead
-    but CLAUDE_CREDENTIALS_JSON is set, reseed from that env value and retry once
+def _note_refresh_failure(message, retry_after=None):
+    """Record a failed refresh and arm the backoff. Call with _creds_lock held."""
+    n = _refresh_backoff["failures"] + 1
+    step = REFRESH_BACKOFF[min(n, len(REFRESH_BACKOFF)) - 1]
+    if retry_after:
+        step = max(step, retry_after)
+    _refresh_backoff["failures"] = n
+    _refresh_backoff["next_at"] = time.time() + step
+    _refresh_backoff["last_error"] = message
+    print(
+        "token refresh failed (%d consecutive): %s — next attempt in %ds"
+        % (n, message, step),
+        file=sys.stderr,
+    )
+
+
+def _refresh_with_reseed(path):
+    """One refresh attempt. If the stored (rotated) refresh token is dead but
+    CLAUDE_CREDENTIALS_JSON holds a DIFFERENT token, reseed from it and retry once
     — so pasting a fresh token into the env and restarting is the recovery."""
-    with _creds_lock:
-        _ensure_creds_file(path)
+    try:
+        return _do_refresh(path)
+    except _InvalidGrant as e:
+        seed = os.environ.get(CREDS_ENV)
+        if not seed:
+            raise RuntimeError(
+                "refresh token rejected and %s not set to reseed: %s" % (CREDS_ENV, e)
+            )
+        seed_creds = json.loads(seed)
+        # Reseeding with the same token that was just rejected would only spend
+        # another request against the endpoint (and the rate limit) to fail again.
+        if _oauth_block(seed_creds).get("refreshToken") == _oauth_block(_load_creds(path)).get(
+            "refreshToken"
+        ):
+            raise RuntimeError(
+                "refresh token rejected and %s holds that same dead token "
+                "(paste a current token and restart): %s" % (CREDS_ENV, e)
+            )
+        _save_creds(path, seed_creds)
         try:
             return _do_refresh(path)
-        except _InvalidGrant as e:
-            seed = os.environ.get(CREDS_ENV)
-            if not seed:
-                raise RuntimeError(
-                    "refresh token rejected and %s not set to reseed: %s" % (CREDS_ENV, e)
-                )
-            _save_creds(path, json.loads(seed))
-            try:
-                return _do_refresh(path)
-            except _InvalidGrant as e2:
-                raise RuntimeError(
-                    "refresh token rejected even after reseeding from %s "
-                    "(paste a current token and restart): %s" % (CREDS_ENV, e2)
-                )
+        except _InvalidGrant as e2:
+            raise RuntimeError(
+                "refresh token rejected even after reseeding from %s "
+                "(paste a current token and restart): %s" % (CREDS_ENV, e2)
+            )
+
+
+def refresh_tokens(path):
+    """Refresh and persist tokens, with backoff across consecutive failures so a
+    throttled or dead credential can't turn the fetch loop into a retry storm."""
+    with _creds_lock:
+        wait = _refresh_backoff["next_at"] - time.time()
+        if wait > 0:
+            raise RuntimeError(
+                "token refresh backing off %ds more after %d consecutive failures: %s"
+                % (int(wait), _refresh_backoff["failures"], _refresh_backoff["last_error"])
+            )
+        _ensure_creds_file(path)
+        try:
+            token = _refresh_with_reseed(path)
+        except _RateLimited as e:
+            _note_refresh_failure("HTTP 429 rate limited by the token endpoint", e.retry_after)
+            raise RuntimeError("token refresh rate limited (HTTP 429): %s" % e)
+        except Exception as e:
+            _note_refresh_failure(str(e))
+            raise
+        _refresh_backoff["failures"] = 0
+        _refresh_backoff["next_at"] = 0.0
+        _refresh_backoff["last_error"] = None
+        return token
+
+
+def _usable_until(oauth):
+    """Epoch ms this access token is good until, or 0 if there isn't a usable one."""
+    if not oauth or not oauth.get("accessToken"):
+        return 0
+    return oauth.get("expiresAt") or 0
+
+
+def _env_seed_oauth():
+    """The CLAUDE_CREDENTIALS_JSON oauth block, or None if unset/unparseable."""
+    seed = os.environ.get(CREDS_ENV)
+    if not seed:
+        return None
+    try:
+        return _oauth_block(json.loads(seed))
+    except ValueError:
+        print("ignoring unparseable %s" % CREDS_ENV, file=sys.stderr)
+        return None
 
 
 def file_access_token(path):
     """Return a valid access token from the creds file, refreshing if the
     stored token is missing or within REFRESH_MARGIN of expiry."""
     _ensure_creds_file(path)
-    oauth = _oauth_block(_load_creds(path))
-    token = oauth.get("accessToken")
-    expires_at = oauth.get("expiresAt")  # epoch milliseconds
-    if token and expires_at and (expires_at / 1000.0) - time.time() > REFRESH_MARGIN:
-        return token
+    creds = _load_creds(path)
+    oauth = _oauth_block(creds)
+    stored_until = _usable_until(oauth)
+    if stored_until and (stored_until / 1000.0) - time.time() > REFRESH_MARGIN:
+        return oauth["accessToken"]
+
+    # The stored token needs replacing. Before spending a request on the token
+    # endpoint, adopt CLAUDE_CREDENTIALS_JSON if it now holds a NEWER credential:
+    # pasting a current one is the documented recovery, and it has to work even
+    # when refresh is unavailable — a throttled token endpoint (HTTP 429) never
+    # reaches the invalid_grant path that would otherwise reseed from the env.
+    seed = _env_seed_oauth()
+    seed_until = _usable_until(seed)
+    if seed_until > stored_until and (seed_until / 1000.0) - time.time() > REFRESH_MARGIN:
+        with _creds_lock:
+            _save_creds(path, json.loads(os.environ[CREDS_ENV]))
+        print("adopted a newer credential from %s (no refresh needed)" % CREDS_ENV, file=sys.stderr)
+        return seed["accessToken"]
+
     return refresh_tokens(path)
 
 
+def using_static_token():
+    return bool(os.environ.get(STATIC_TOKEN_ENV, "").strip())
+
+
 def access_token():
+    # A long-lived token short-circuits everything else: nothing to refresh, so
+    # the rate-limited token endpoint is never in the path at all.
+    if using_static_token():
+        return os.environ[STATIC_TOKEN_ENV].strip()
     if _creds_file:
         return file_access_token(_creds_file)
     return keychain_access_token()
@@ -235,10 +376,28 @@ def _request_usage(token):
 def fetch_usage():
     """Fetch the usage endpoint. Returns (status, body_str). In creds-file mode
     a 401/403 triggers one forced refresh + retry (the cached token may have
-    expired between refreshes)."""
+    expired between refreshes). With a static long-lived token there is nothing
+    to refresh, so a 401/403 is reported as-is — it means that token is dead and
+    a human needs to mint a new one."""
     status, body = _request_usage(access_token())
-    if status in (401, 403) and _creds_file:
-        status, body = _request_usage(refresh_tokens(_creds_file))
+    if status in (401, 403):
+        if using_static_token():
+            if status == 403 and "scope" in body:
+                # Measured 2026-07-28: a `claude setup-token` token authenticates
+                # fine but lacks user:profile, which this endpoint requires. There
+                # is no scope flag on that command, so a static token cannot serve
+                # usage data — only an interactive-login credential can.
+                hint = (
+                    "%s lacks the scope this endpoint needs (user:profile). A "
+                    "`claude setup-token` token cannot read usage — use "
+                    "%s with an interactive-login credential instead."
+                    % (STATIC_TOKEN_ENV, CREDS_ENV)
+                )
+            else:
+                hint = "%s was rejected — it is invalid, expired, or revoked." % STATIC_TOKEN_ENV
+            return status, "HTTP %d: %s %s" % (status, hint, body[:160])
+        if _creds_file:
+            status, body = _request_usage(refresh_tokens(_creds_file))
     return status, body
 
 
@@ -262,6 +421,24 @@ def fetch_loop(interval):
         time.sleep(interval)
 
 
+def _annotate(body, fetched_at, err):
+    """Return the usage JSON with a COMPANION_KEY object added, carrying when the
+    data was last successfully fetched and the current fetch error (if any).
+
+    The last good body keeps being served while our own fetches fail, so without
+    this the app cannot tell live percentages from a frozen copy — which is
+    exactly how a stale reading ends up displayed as current. Falls back to the
+    verbatim body if it isn't a JSON object."""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return body.encode("utf-8")
+    if not isinstance(payload, dict):
+        return body.encode("utf-8")
+    payload[COMPANION_KEY] = {"fetched_at": int(fetched_at), "error": err}
+    return json.dumps(payload).encode("utf-8")
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] != "/usage.json":
@@ -269,7 +446,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         with _lock:
             body = _state["body"]
-            age = time.time() - _state["fetched_at"]
+            fetched_at = _state["fetched_at"]
             err = _state["last_error"]
         if body is None:
             self.send_response(503)
@@ -279,9 +456,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("X-Age-Seconds", str(int(age)))
+        self.send_header("X-Age-Seconds", str(int(time.time() - fetched_at)))
         self.end_headers()
-        self.wfile.write(body.encode("utf-8"))
+        self.wfile.write(_annotate(body, fetched_at, err))
 
     def log_message(self, fmt, *args):  # quiet per-request logging
         pass
@@ -360,7 +537,12 @@ def main():
 
     global _creds_file
     _creds_file = args.creds_file
-    source = "creds file %s" % _creds_file if _creds_file else "macOS Keychain"
+    if using_static_token():
+        source = "%s (long-lived token; no refresh)" % STATIC_TOKEN_ENV
+    elif _creds_file:
+        source = "creds file %s" % _creds_file
+    else:
+        source = "macOS Keychain"
 
     threading.Thread(target=fetch_loop, args=(args.interval,), daemon=True).start()
     server = ThreadingHTTPServer((args.bind, args.port), Handler)

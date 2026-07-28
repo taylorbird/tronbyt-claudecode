@@ -13,6 +13,15 @@ LAST_GOOD_KEY = "claude_usage_last_good"
 # used when the device/config provides no $tz
 DEFAULT_TZ = "America/Los_Angeles"
 
+# The companion keeps serving its last good numbers (HTTP 200) even while its own
+# fetches to Anthropic fail, so an HTTP-level check can't detect staleness. It
+# instead reports the last successful fetch time and error under this key, and we
+# compare against the wall clock: a warning border past STALE_AFTER, and an error
+# frame past DEAD_AFTER, because by then the percentages are fiction.
+COMPANION_KEY = "_companion"
+STALE_AFTER = 360
+DEAD_AFTER = 900
+
 def iso(t):
     return t.format("2006-01-02T15:04:05Z07:00")
 
@@ -28,6 +37,7 @@ def mock_usage(session_pct, weekly_pct, session_reset, weekly_reset, scoped = No
         "seven_day": {"utilization": weekly_pct * 1.0, "resets_at": weekly_reset},
         "seven_day_opus": None,
         "limits": limits,
+        COMPANION_KEY: {"fetched_at": int(time.now().unix), "error": None},
     }
 
 def mock_presets():
@@ -68,11 +78,52 @@ def get_usage(config):
     cached = cache.get(LAST_GOOD_KEY)
     if cached:
         return json.decode(cached), True, None
-    return None, False, "http %d" % res.status_code
+
+    # The companion's error responses carry {"error": "..."} — surface that
+    # rather than a bare status code, so a dead token doesn't read as "HTTP 503".
+    body = json.decode(res.body(), None)
+    detail = body.get("error") if type(body) == "dict" else None
+    return None, False, err_code(detail or "http %d" % res.status_code)
+
+# condenses a companion/fetch error into a label that fits the 64px screen
+def err_code(err):
+    if not err:
+        return "NO DATA"
+    e = err.lower()
+    if "429" in e or "rate limit" in e or "backing off" in e:
+        return "RATE LIMIT"
+    if "invalid_grant" in e or "rejected" in e:
+        return "AUTH DEAD"
+    if "keychain" in e:
+        return "KEYCHAIN"
+    if "401" in e or "403" in e:
+        return "AUTH FAIL"
+    return "FETCH FAIL"
+
+# returns (seconds since the companion's last good fetch or None, error or None)
+def companion_status(usage):
+    meta = usage.get(COMPANION_KEY) or {}
+    fetched_at = meta.get("fetched_at")
+    age = None
+    if fetched_at != None:
+        age = int(time.now().unix) - int(fetched_at)
+        if age < 0:  # clock skew between the companion host and the device
+            age = 0
+    return age, meta.get("error")
+
+def age_text(age):
+    if age == None:
+        return "?"
+    if age >= 24 * 3600:
+        return "%dD" % (age // (24 * 3600))
+    if age >= 3600:
+        return "%dH%dM" % (age // 3600, (age % 3600) // 60)
+    return "%dM" % (age // 60)
 
 TRACK_COLOR = "#222"
 LABEL_COLOR = "#888"
 DAY_COLOR = "#4FC3F7"
+STALE_COLOR = "#FFC107"
 
 # red screen border once the session or weekly limit reaches this
 ALERT_PCT = 90
@@ -134,6 +185,19 @@ def self_test():
         fail("pct_color thresholds wrong")
     if time.parse_time("2026-07-27T16:59:59.538484+00:00").year != 2026:
         fail("parse_time failed on fractional-second timestamp")
+    if err_code("token refresh rate limited (HTTP 429)") != "RATE LIMIT":
+        fail("err_code missed a 429")
+    if err_code("HTTP 400: invalid_grant") != "AUTH DEAD":
+        fail("err_code missed a dead refresh token")
+    if err_code(None) != "NO DATA":
+        fail("err_code mishandled a missing error")
+    if age_text(90) != "1M" or age_text(3660) != "1H1M" or age_text(90000) != "1D":
+        fail("age_text formatting wrong")
+    fresh_age, fresh_err = companion_status(mock_usage(1, 1, None, None))
+    if fresh_age == None or fresh_age > 5 or fresh_err != None:
+        fail("companion_status wrong on fresh data: %s / %s" % (fresh_age, fresh_err))
+    if companion_status({"limits": []}) != (None, None):
+        fail("companion_status should report unknown age when metadata is absent")
 
 def limit_label(entry):
     kind = entry.get("kind")
@@ -199,14 +263,13 @@ def reset_row(limits, tz):
         return frames[0]
     return render.Animation(children = frames)
 
-def alert_border(child):
-    red = "#F44336"
+def alert_border(child, color):
     return render.Stack(children = [
         child,
-        render.Box(width = 64, height = 1, color = red),
-        render.Padding(pad = (0, 31, 0, 0), child = render.Box(width = 64, height = 1, color = red)),
-        render.Box(width = 1, height = 32, color = red),
-        render.Padding(pad = (63, 0, 0, 0), child = render.Box(width = 1, height = 32, color = red)),
+        render.Box(width = 64, height = 1, color = color),
+        render.Padding(pad = (0, 31, 0, 0), child = render.Box(width = 64, height = 1, color = color)),
+        render.Box(width = 1, height = 32, color = color),
+        render.Padding(pad = (63, 0, 0, 0), child = render.Box(width = 1, height = 32, color = color)),
     ])
 
 def message_frame(title, body_text, color):
@@ -233,6 +296,14 @@ def main(config):
         return message_frame("CLAUDE USAGE", "TOKEN EXPIRED", "#F44336")
     if err:
         return message_frame("CLAUDE USAGE", err.upper(), "#F44336")
+
+    # Past DEAD_AFTER the companion's numbers are stale enough to be misleading,
+    # so replace them with the reason rather than showing a frozen reading.
+    age, companion_err = companion_status(usage)
+    if age != None and age >= DEAD_AFTER:
+        return message_frame("STALE %s" % age_text(age), err_code(companion_err), "#F44336")
+    if companion_err or (age != None and age >= STALE_AFTER):
+        stale = True
 
     limits = limits_from(usage)[:3]
     if not limits:
@@ -268,15 +339,18 @@ def main(config):
         main_align = "end",
         children = children,
     )
+    alert = False
     for label, pct, _ in limits:
         if label in ("5H", "WK") and pct >= ALERT_PCT:
-            root_child = alert_border(root_child)
+            alert = True
             break
-    if stale:
-        root_child = render.Stack(children = [
-            root_child,
-            render.Padding(pad = (63, 0, 0, 0), child = render.Box(width = 1, height = 1, color = "#FFC107")),
-        ])
+
+    # A red limit border outranks the amber stale border — a real 90%+ reading is
+    # the more urgent of the two, and only one border fits.
+    if alert:
+        root_child = alert_border(root_child, "#F44336")
+    elif stale:
+        root_child = alert_border(root_child, STALE_COLOR)
 
     # delay is per animation frame: the reset row alternates 5H/WK every 2.5s
     return render.Root(delay = 2500, child = root_child)
