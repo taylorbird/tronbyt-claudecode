@@ -24,6 +24,7 @@ keep it running (see README).
 """
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -49,6 +50,12 @@ TOKEN_URLS = [
 ]
 # Refresh this many seconds before the access token's stated expiry.
 REFRESH_MARGIN = 300
+
+# Optional env var holding the initial credentials JSON (same shape as the
+# file). It SEEDS the writable creds file on first boot, so the credential can
+# be passed in like any other config value instead of transferring a file. The
+# living, rotated copy then lives in the (writable) --creds-file location.
+CREDS_ENV = "CLAUDE_CREDENTIALS_JSON"
 
 _state = {"body": None, "fetched_at": 0.0, "last_error": None}
 _lock = threading.Lock()
@@ -92,62 +99,108 @@ def _save_creds(path, creds):
     os.replace(tmp, path)
 
 
-def refresh_tokens(path):
-    """Exchange the stored refresh token for a fresh access token, persist the
-    rotated tokens, and return the new access token. Raises on failure."""
-    with _creds_lock:
-        creds = _load_creds(path)
-        oauth = _oauth_block(creds)
-        rt = oauth.get("refreshToken")
-        if not rt:
-            raise RuntimeError("no refreshToken in %s" % path)
-        payload = json.dumps(
-            {"grant_type": "refresh_token", "refresh_token": rt, "client_id": CLIENT_ID}
-        ).encode("utf-8")
-        last_err = None
-        for url in TOKEN_URLS:
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": USER_AGENT,
-                },
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    data = json.loads(resp.read().decode("utf-8", "replace"))
-            except urllib.error.HTTPError as e:
-                body = e.read().decode("utf-8", "replace")
-                last_err = "HTTP %d: %s" % (e.code, body[:200])
-                # 400 invalid_grant => the refresh token is dead; trying the
-                # other endpoint won't help and re-login is required.
-                if e.code == 400:
-                    raise RuntimeError("refresh token rejected: %s" % last_err)
-                continue
-            except Exception as e:  # network hiccup: try the next endpoint
-                last_err = str(e)
-                continue
+class _InvalidGrant(Exception):
+    """The refresh token was rejected (RFC 6749 invalid_grant) — it's dead."""
 
-            oauth["accessToken"] = data["access_token"]
-            if data.get("refresh_token"):
-                oauth["refreshToken"] = data["refresh_token"]
-            if data.get("expires_in"):
-                oauth["expiresAt"] = int((time.time() + data["expires_in"]) * 1000)
-            if "claudeAiOauth" in creds:
-                creds["claudeAiOauth"] = oauth
-            else:
-                creds = oauth
-            _save_creds(path, creds)
-            return oauth["accessToken"]
-        raise RuntimeError("token refresh failed at all endpoints: %s" % last_err)
+
+def _ensure_creds_file(path):
+    """Make sure the writable creds file exists. If it doesn't, seed it from the
+    CLAUDE_CREDENTIALS_JSON env var so the credential can be supplied without
+    transferring a file. Raises if neither the file nor the env seed exists."""
+    if os.path.exists(path):
+        return
+    seed = os.environ.get(CREDS_ENV)
+    if not seed:
+        raise RuntimeError(
+            "no creds file at %s and %s is not set — provide one or the other" % (path, CREDS_ENV)
+        )
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    _save_creds(path, json.loads(seed))
+
+
+def _do_refresh(path):
+    """One refresh attempt against the stored token. Persists the rotated tokens
+    and returns the new access token. Raises _InvalidGrant if the refresh token
+    is dead, RuntimeError on other failures."""
+    creds = _load_creds(path)
+    oauth = _oauth_block(creds)
+    rt = oauth.get("refreshToken")
+    if not rt:
+        raise RuntimeError("no refreshToken in %s" % path)
+    payload = json.dumps(
+        {"grant_type": "refresh_token", "refresh_token": rt, "client_id": CLIENT_ID}
+    ).encode("utf-8")
+    last_err = None
+    for url in TOKEN_URLS:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")
+            last_err = "HTTP %d: %s" % (e.code, body[:200])
+            # invalid_grant => the refresh token is dead; trying the other
+            # endpoint won't help. Signal so the caller can reseed from env.
+            if e.code == 400 and "invalid_grant" in body:
+                raise _InvalidGrant(last_err)
+            continue
+        except Exception as e:  # network hiccup: try the next endpoint
+            last_err = str(e)
+            continue
+
+        oauth["accessToken"] = data["access_token"]
+        if data.get("refresh_token"):
+            oauth["refreshToken"] = data["refresh_token"]
+        if data.get("expires_in"):
+            oauth["expiresAt"] = int((time.time() + data["expires_in"]) * 1000)
+        if "claudeAiOauth" in creds:
+            creds["claudeAiOauth"] = oauth
+        else:
+            creds = oauth
+        _save_creds(path, creds)
+        return oauth["accessToken"]
+    raise RuntimeError("token refresh failed at all endpoints: %s" % last_err)
+
+
+def refresh_tokens(path):
+    """Refresh and persist tokens. If the stored (rotated) refresh token is dead
+    but CLAUDE_CREDENTIALS_JSON is set, reseed from that env value and retry once
+    — so pasting a fresh token into the env and restarting is the recovery."""
+    with _creds_lock:
+        _ensure_creds_file(path)
+        try:
+            return _do_refresh(path)
+        except _InvalidGrant as e:
+            seed = os.environ.get(CREDS_ENV)
+            if not seed:
+                raise RuntimeError(
+                    "refresh token rejected and %s not set to reseed: %s" % (CREDS_ENV, e)
+                )
+            _save_creds(path, json.loads(seed))
+            try:
+                return _do_refresh(path)
+            except _InvalidGrant as e2:
+                raise RuntimeError(
+                    "refresh token rejected even after reseeding from %s "
+                    "(paste a current token and restart): %s" % (CREDS_ENV, e2)
+                )
 
 
 def file_access_token(path):
     """Return a valid access token from the creds file, refreshing if the
     stored token is missing or within REFRESH_MARGIN of expiry."""
+    _ensure_creds_file(path)
     oauth = _oauth_block(_load_creds(path))
     token = oauth.get("accessToken")
     expires_at = oauth.get("expiresAt")  # epoch milliseconds
@@ -234,6 +287,49 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def render_and_push(star_path, data_url, tronbyt_url, device_id, api_key, install_id, pixlet_bin):
+    """Render the star against data_url and push the frame to the tronbyt-server.
+    Raises on any failure (bad render or non-2xx push)."""
+    out = "/tmp/claude_usage_frame.webp"
+    try:
+        subprocess.run(
+            [pixlet_bin, "render", star_path, "data_url=" + data_url, "-o", out],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        with open(out, "rb") as f:
+            img = base64.b64encode(f.read()).decode("ascii")
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+    body = json.dumps({"image": img, "installationID": install_id}).encode("utf-8")
+    req = urllib.request.Request(
+        "%s/v0/devices/%s/push" % (tronbyt_url.rstrip("/"), device_id),
+        data=body,
+        method="POST",
+        headers={"Authorization": api_key, "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.status
+
+
+def push_loop(port, interval, star_path, tronbyt_url, device_id, api_key, install_id, pixlet_bin):
+    """Render+push on a timer, reading usage from this same process's localhost
+    HTTP server. Keeps looping across transient render/push failures."""
+    data_url = "http://127.0.0.1:%d/usage.json" % port
+    while True:
+        try:
+            render_and_push(star_path, data_url, tronbyt_url, device_id, api_key, install_id, pixlet_bin)
+        except subprocess.CalledProcessError as e:
+            print("push failed (render): %s" % (e.stderr or e).strip(), file=sys.stderr)
+        except Exception as e:
+            print("push failed: %s" % e, file=sys.stderr)
+        time.sleep(interval)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Serve Claude usage JSON for the Tronbyt app.")
     parser.add_argument("--port", type=int, default=8377)
@@ -247,9 +343,18 @@ def main():
     parser.add_argument(
         "--creds-file",
         default=None,
-        help="Path to a Claude .credentials.json. When set, the companion "
-        "reads/refreshes the OAuth token from this file (and writes rotated "
-        "tokens back) instead of the macOS Keychain. Use off-Mac.",
+        help="Path to a writable Claude .credentials.json. When set, the "
+        "companion reads/refreshes the OAuth token from this file (and writes "
+        "rotated tokens back) instead of the macOS Keychain. If the file does "
+        "not exist it is seeded from the %s env var. Use off-Mac." % CREDS_ENV,
+    )
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Also render claude_usage.star and push frames to the "
+        "tronbyt-server from THIS process (one all-in-one container). Reads "
+        "TRONBYT_URL, DEVICE_ID, API_KEY, and optionally INSTALL_ID / "
+        "PUSH_INTERVAL / PIXLET_BIN / STAR_PATH from the environment.",
     )
     args = parser.parse_args()
 
@@ -263,7 +368,45 @@ def main():
         "Serving http://%s:%d/usage.json (fetching every %ds via %s)"
         % (args.bind, args.port, args.interval, source)
     )
-    server.serve_forever()
+
+    if not args.push:
+        server.serve_forever()
+        return
+
+    # All-in-one mode: serve on a background thread, render+push in the main
+    # thread against our own localhost endpoint. No second container, no
+    # internal network — the star still just fetches a URL (a local one).
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    here = os.path.dirname(os.path.abspath(__file__))
+    star_path = os.environ.get("STAR_PATH", os.path.join(os.path.dirname(here), "claude_usage.star"))
+    push_interval = int(os.environ.get("PUSH_INTERVAL", "60"))
+    pixlet_bin = os.environ.get("PIXLET_BIN", "pixlet")
+    try:
+        tronbyt_url = os.environ["TRONBYT_URL"]
+        device_id = os.environ["DEVICE_ID"]
+        api_key = os.environ["API_KEY"]
+    except KeyError as e:
+        sys.exit("--push requires %s in the environment" % e)
+    install_id = os.environ.get("INSTALL_ID", "claudeusage")
+    print(
+        "Pushing to %s (device %s) every %ds via %s"
+        % (tronbyt_url, device_id, push_interval, pixlet_bin)
+    )
+
+    # Wait (up to ~30s) for the first successful fetch before the first push, so
+    # a fresh start never flashes a "503 / no data yet" frame on the device. If
+    # data never arrives (a genuine failure), fall through and push anyway so
+    # real errors still reach the screen.
+    ready = False
+    for _ in range(30):
+        with _lock:
+            ready = _state["body"] is not None
+        if ready:
+            break
+        time.sleep(1)
+    print("first usage fetch %s; starting push loop" % ("ready" if ready else "timed out — pushing anyway"))
+
+    push_loop(args.port, push_interval, star_path, tronbyt_url, device_id, api_key, install_id, pixlet_bin)
 
 
 if __name__ == "__main__":

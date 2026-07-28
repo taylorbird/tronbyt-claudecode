@@ -3,7 +3,7 @@
 #
 # Required environment (pass via launchd plist or shell — keep the API key
 # out of this repo):
-#   TRONBYT_URL   e.g. http://10.33.103.126:8100
+#   TRONBYT_URL   e.g. http://your-tronbyt-server:8100
 #   DEVICE_ID     tronbyt device id
 #   API_KEY       tronbyt device API key
 # Optional:

@@ -1,51 +1,38 @@
-# Two services from one image:
-#   companion — reads/refreshes the OAuth token from ./creds/credentials.json
-#               and serves the usage JSON on the internal network.
-#   pusher    — renders claude_usage.star every PUSH_INTERVAL seconds and pushes
-#               the frame to the tronbyt-server.
+# One image, one container, one process: it refreshes the OAuth token, serves
+# the usage numbers on its own localhost, renders claude_usage.star, and pushes
+# the frame to the tronbyt-server — all in a single Python process.
 #
-# Only the companion sees the credentials; only the pusher sees the API key.
-# Copy .env.example to .env and drop your credentials.json in ./creds/ first
-# (see README.md).
-
-# The image is published at docker.io/taylorlbird/claude-usage. On the Pi just
+# Both secrets are supplied via .env — no files to transfer. Copy .env.example
+# to .env, paste your credential into CLAUDE_CREDENTIALS_JSON, fill in the API
+# key. See INSTALL.md for a step-by-step.
+#
+# The image is published at docker.io/taylorlbird/claude-usage. Just
 # `docker compose pull && docker compose up -d`. To rebuild it yourself instead
-# of pulling, uncomment the `build:` block on the companion service and run
-# `docker compose up -d --build`.
+# of pulling, uncomment the `build:` block and run `docker compose up -d --build`.
 services:
-  companion:
+  claude-usage:
     image: taylorlbird/claude-usage:latest
     # build:
     #   context: ..
     #   dockerfile: docker/Dockerfile
-    command:
-      - python3
-      - scripts/serve_usage.py
-      - --creds-file
-      - /creds/credentials.json
-      - --bind
-      - 0.0.0.0
-      - --port
-      - "8377"
-      - --interval
-      - "120"
-    volumes:
-      # Writable: rotated refresh tokens are persisted back here across restarts.
-      - ./creds:/creds
-    restart: unless-stopped
-
-  pusher:
-    image: taylorlbird/claude-usage:latest
-    depends_on:
-      - companion
     environment:
+      # The initial credential, pasted in like the API key. On first boot the
+      # process seeds /config/credentials.json from this; after that the living,
+      # rotated token lives in the volume and this value is only used to recover
+      # if the stored token dies (see INSTALL.md).
+      CLAUDE_CREDENTIALS_JSON: ${CLAUDE_CREDENTIALS_JSON:-}
       TRONBYT_URL: ${TRONBYT_URL}
       DEVICE_ID: ${DEVICE_ID}
       API_KEY: ${API_KEY}
       INSTALL_ID: ${INSTALL_ID:-claudeusage}
-      DATA_URL: http://companion:8377/usage.json
-    command:
-      - sh
-      - -c
-      - 'while true; do scripts/render_push.sh || echo "push failed"; sleep ${PUSH_INTERVAL:-60}; done'
+      PUSH_INTERVAL: ${PUSH_INTERVAL:-60}
+      # Flush print() immediately so `docker compose logs` shows output live.
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # Docker-managed named volume — nothing to create or transfer. The rotated
+      # refresh token is written here so it survives restarts.
+      - claude-creds:/config
     restart: unless-stopped
+
+volumes:
+  claude-creds:

@@ -32,6 +32,9 @@ RUN chmod +x scripts/render_push.sh \
 # pixlet lives on PATH here; render_push.sh honours PIXLET_BIN.
 ENV PIXLET_BIN=/usr/local/bin/pixlet
 
-# Default command runs the companion; docker-compose overrides per service.
-CMD ["python3", "scripts/serve_usage.py", "--creds-file", "/creds/credentials.json", \
-     "--bind", "0.0.0.0", "--port", "8377", "--interval", "120"]
+# All-in-one default: one process that refreshes the token, serves usage on
+# localhost, and renders+pushes frames. /config is the writable location for the
+# (rotating) credentials file; seed it via CLAUDE_CREDENTIALS_JSON or a mount.
+# Needs TRONBYT_URL / DEVICE_ID / API_KEY in the environment.
+CMD ["python3", "scripts/serve_usage.py", "--creds-file", "/config/credentials.json", \
+     "--push", "--bind", "127.0.0.1", "--port", "8377", "--interval", "120"]

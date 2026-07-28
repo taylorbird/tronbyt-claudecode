@@ -53,11 +53,11 @@ render locally, push the frame to tronbyt-server's Tidbyt-compatible API.
 ## Setup (Docker — run it off the Mac)
 
 To run the updater on a separate always-on box (e.g. a Raspberry Pi on the
-same LAN) instead of your Mac, use the containerized companion + pusher in
-[`docker/`](docker/README.md). The companion refreshes its own OAuth token
-from a seeded `credentials.json`, so no Claude Code process is needed on the
-host. See [`docker/README.md`](docker/README.md) for the full setup, including
-the one manual credential-seeding step and the headless-refresh caveat.
+same LAN) instead of your Mac, use the single-container setup in
+[`docker/`](docker/README.md). One process refreshes its own OAuth token
+(seeded from an env var), renders, and pushes — no Claude Code process is
+needed on the host. See [`docker/README.md`](docker/README.md) for the full
+setup, including the one credential-paste step and the headless-refresh caveat.
 
 ## Setup (server-side render — if the server can reach your Mac)
 
