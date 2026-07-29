@@ -2,7 +2,7 @@ import XCTest
 @testable import ClaudeUsage
 
 @MainActor
-final class SettingsTests: XCTestCase {
+final class AppSettingsTests: XCTestCase {
 
     /// Isolated so tests never touch the real app's stored configuration.
     private var suiteName: String!
@@ -18,16 +18,16 @@ final class SettingsTests: XCTestCase {
 
     override func tearDown() {
         defaults.removePersistentDomain(forName: suiteName)
-        try? Settings.storeAPIKey("", service: service)   // clears the Keychain item
+        try? AppSettings.storeAPIKey("", service: service)   // clears the Keychain item
         super.tearDown()
     }
 
-    private func makeSettings() -> Settings {
-        Settings(defaults: defaults, keychainService: service)
+    private func makeAppSettings() -> AppSettings {
+        AppSettings(defaults: defaults, keychainService: service)
     }
 
     func testDefaultsAreEmptyExceptInstallationID() {
-        let settings = makeSettings()
+        let settings = makeAppSettings()
         XCTAssertEqual(settings.baseURL, "")
         XCTAssertEqual(settings.deviceID, "")
         // Matches render_push.sh's default so an existing device keeps its slot
@@ -36,12 +36,12 @@ final class SettingsTests: XCTestCase {
     }
 
     func testNonSecretFieldsRoundTripThroughUserDefaults() {
-        let first = makeSettings()
+        let first = makeAppSettings()
         first.baseURL = "http://10.0.0.5:8100"
         first.deviceID = "my-device"
         first.installationID = "custom"
 
-        let second = makeSettings()
+        let second = makeAppSettings()
         XCTAssertEqual(second.baseURL, "http://10.0.0.5:8100")
         XCTAssertEqual(second.deviceID, "my-device")
         XCTAssertEqual(second.installationID, "custom")
@@ -50,7 +50,7 @@ final class SettingsTests: XCTestCase {
     /// The API key must NOT land in UserDefaults — that is a plaintext plist, which
     /// is exactly the exposure this replaces.
     func testApiKeyIsNotWrittenToUserDefaults() {
-        let settings = makeSettings()
+        let settings = makeAppSettings()
         settings.apiKey = "super-secret"
         let dump = defaults.dictionaryRepresentation()
         for (key, value) in dump {
@@ -60,32 +60,32 @@ final class SettingsTests: XCTestCase {
     }
 
     func testApiKeyRoundTripsThroughTheKeychain() throws {
-        let first = makeSettings()
+        let first = makeAppSettings()
         first.apiKey = "secret-abc"
-        let second = makeSettings()
+        let second = makeAppSettings()
         XCTAssertEqual(second.apiKey, "secret-abc")
     }
 
     func testClearingTheApiKeyRemovesTheStoredItem() throws {
-        let settings = makeSettings()
+        let settings = makeAppSettings()
         settings.apiKey = "to-be-removed"
         settings.apiKey = ""
-        XCTAssertEqual(try Settings.loadAPIKey(service: service), "")
+        XCTAssertEqual(try AppSettings.loadAPIKey(service: service), "")
     }
 
     func testOverwritingTheApiKeyReplacesRatherThanDuplicates() throws {
-        let settings = makeSettings()
+        let settings = makeAppSettings()
         settings.apiKey = "first"
         settings.apiKey = "second"
-        XCTAssertEqual(try Settings.loadAPIKey(service: service), "second")
+        XCTAssertEqual(try AppSettings.loadAPIKey(service: service), "second")
     }
 
     func testMissingKeychainItemReadsAsEmptyNotAnError() throws {
-        XCTAssertEqual(try Settings.loadAPIKey(service: "com.tbird.absent.\(UUID())"), "")
+        XCTAssertEqual(try AppSettings.loadAPIKey(service: "com.tbird.absent.\(UUID())"), "")
     }
 
     func testConfigAssemblesAllFields() {
-        let settings = makeSettings()
+        let settings = makeAppSettings()
         settings.baseURL = "http://host:8100"
         settings.deviceID = "dev"
         settings.installationID = "inst"
@@ -97,7 +97,7 @@ final class SettingsTests: XCTestCase {
     }
 
     func testUnconfiguredUntilTheRequiredFieldsArePresent() {
-        let settings = makeSettings()
+        let settings = makeAppSettings()
         XCTAssertFalse(settings.config.isConfigured)
         settings.baseURL = "http://host:8100"
         settings.deviceID = "dev"

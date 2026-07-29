@@ -9,7 +9,7 @@ import Security
 /// how it ended up pasted into a chat transcript.
 @MainActor
 @Observable
-final class Settings {
+final class AppSettings {
 
     private enum Key {
         static let baseURL = "tronbytBaseURL"
@@ -39,7 +39,7 @@ final class Settings {
         didSet { try? Self.storeAPIKey(apiKey, service: keychainService) }
     }
 
-    init(defaults: UserDefaults = .standard, keychainService: String = Settings.keychainService) {
+    init(defaults: UserDefaults = .standard, keychainService: String = AppSettings.keychainService) {
         self.defaults = defaults
         self.keychainService = keychainService
         self.baseURL = defaults.string(forKey: Key.baseURL) ?? ""
@@ -70,7 +70,7 @@ final class Settings {
         // pusher must work without anyone typing a password.
         insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let status = SecItemAdd(insert as CFDictionary, nil)
-        guard status == errSecSuccess else { throw SettingsError.keychain(status) }
+        guard status == errSecSuccess else { throw AppSettingsError.keychain(status) }
     }
 
     nonisolated static func loadAPIKey(service: String) throws -> String {
@@ -85,18 +85,18 @@ final class Settings {
         switch status {
         case errSecSuccess:
             guard let data = item as? Data, let text = String(data: data, encoding: .utf8) else {
-                throw SettingsError.malformed
+                throw AppSettingsError.malformed
             }
             return text
         case errSecItemNotFound:
             return ""
         default:
-            throw SettingsError.keychain(status)
+            throw AppSettingsError.keychain(status)
         }
     }
 }
 
-enum SettingsError: Error, CustomStringConvertible {
+enum AppSettingsError: Error, CustomStringConvertible {
     case keychain(OSStatus)
     case malformed
 
