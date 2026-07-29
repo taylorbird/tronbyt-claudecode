@@ -1,0 +1,108 @@
+import XCTest
+@testable import ClaudeUsage
+
+@MainActor
+final class SettingsTests: XCTestCase {
+
+    /// Isolated so tests never touch the real app's stored configuration.
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+    private var service: String!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "ClaudeUsageTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+        service = "com.tbird.ClaudeUsage.test.\(UUID().uuidString)"
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        try? Settings.storeAPIKey("", service: service)   // clears the Keychain item
+        super.tearDown()
+    }
+
+    private func makeSettings() -> Settings {
+        Settings(defaults: defaults, keychainService: service)
+    }
+
+    func testDefaultsAreEmptyExceptInstallationID() {
+        let settings = makeSettings()
+        XCTAssertEqual(settings.baseURL, "")
+        XCTAssertEqual(settings.deviceID, "")
+        // Matches render_push.sh's default so an existing device keeps its slot
+        // instead of gaining a second installation.
+        XCTAssertEqual(settings.installationID, "claudeusage")
+    }
+
+    func testNonSecretFieldsRoundTripThroughUserDefaults() {
+        let first = makeSettings()
+        first.baseURL = "http://10.0.0.5:8100"
+        first.deviceID = "my-device"
+        first.installationID = "custom"
+
+        let second = makeSettings()
+        XCTAssertEqual(second.baseURL, "http://10.0.0.5:8100")
+        XCTAssertEqual(second.deviceID, "my-device")
+        XCTAssertEqual(second.installationID, "custom")
+    }
+
+    /// The API key must NOT land in UserDefaults — that is a plaintext plist, which
+    /// is exactly the exposure this replaces.
+    func testApiKeyIsNotWrittenToUserDefaults() {
+        let settings = makeSettings()
+        settings.apiKey = "super-secret"
+        let dump = defaults.dictionaryRepresentation()
+        for (key, value) in dump {
+            XCTAssertFalse("\(value)".contains("super-secret"),
+                           "API key leaked into UserDefaults under \(key)")
+        }
+    }
+
+    func testApiKeyRoundTripsThroughTheKeychain() throws {
+        let first = makeSettings()
+        first.apiKey = "secret-abc"
+        let second = makeSettings()
+        XCTAssertEqual(second.apiKey, "secret-abc")
+    }
+
+    func testClearingTheApiKeyRemovesTheStoredItem() throws {
+        let settings = makeSettings()
+        settings.apiKey = "to-be-removed"
+        settings.apiKey = ""
+        XCTAssertEqual(try Settings.loadAPIKey(service: service), "")
+    }
+
+    func testOverwritingTheApiKeyReplacesRatherThanDuplicates() throws {
+        let settings = makeSettings()
+        settings.apiKey = "first"
+        settings.apiKey = "second"
+        XCTAssertEqual(try Settings.loadAPIKey(service: service), "second")
+    }
+
+    func testMissingKeychainItemReadsAsEmptyNotAnError() throws {
+        XCTAssertEqual(try Settings.loadAPIKey(service: "com.tbird.absent.\(UUID())"), "")
+    }
+
+    func testConfigAssemblesAllFields() {
+        let settings = makeSettings()
+        settings.baseURL = "http://host:8100"
+        settings.deviceID = "dev"
+        settings.installationID = "inst"
+        settings.apiKey = "key"
+        XCTAssertEqual(settings.config,
+                       TronbytConfig(baseURL: "http://host:8100", deviceID: "dev",
+                                     installationID: "inst", apiKey: "key"))
+        XCTAssertTrue(settings.config.isConfigured)
+    }
+
+    func testUnconfiguredUntilTheRequiredFieldsArePresent() {
+        let settings = makeSettings()
+        XCTAssertFalse(settings.config.isConfigured)
+        settings.baseURL = "http://host:8100"
+        settings.deviceID = "dev"
+        XCTAssertFalse(settings.config.isConfigured, "still needs an API key")
+        settings.apiKey = "key"
+        XCTAssertTrue(settings.config.isConfigured)
+    }
+}
