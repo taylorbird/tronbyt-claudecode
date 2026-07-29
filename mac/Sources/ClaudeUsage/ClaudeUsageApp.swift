@@ -91,6 +91,8 @@ private struct SettingsView: View {
     let settings: AppSettings
     let scheduler: Scheduler?
     @State private var testResult: String?
+    @State private var launchAtLogin = false
+    @State private var loginError: String?
 
     var body: some View {
         Form {
@@ -121,8 +123,35 @@ private struct SettingsView: View {
                     Text(testResult).foregroundStyle(.secondary)
                 }
             }
+
+            Divider()
+
+            Toggle("Start at login", isOn: Binding(
+                get: { launchAtLogin },
+                set: { wanted in
+                    do {
+                        try LaunchAtLogin.setEnabled(wanted)
+                        launchAtLogin = LaunchAtLogin.isEnabled
+                        loginError = nil
+                    } catch {
+                        loginError = String(describing: error)
+                    }
+                }
+            ))
+            .disabled(!LaunchAtLogin.isInStableLocation)
+
+            if !LaunchAtLogin.isInStableLocation {
+                Text("Move the app to /Applications to enable this — a login item "
+                     + "pointing into a build folder breaks when that folder is cleaned.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let loginError {
+                Text(loginError).font(.caption).foregroundStyle(.red)
+            }
         }
         .padding(20)
         .frame(width: 420)
+        .onAppear { launchAtLogin = LaunchAtLogin.isEnabled }
     }
 }
