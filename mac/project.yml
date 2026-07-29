@@ -1,0 +1,83 @@
+# XcodeGen project definition. The .xcodeproj is generated and git-ignored —
+# edit this file and run `xcodegen generate`, never the project directly.
+name: ClaudeUsage
+options:
+  bundleIdPrefix: com.tbird
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  # macOS cannot encode WebP (verified: CGImageDestinationCopyTypeIdentifiers
+  # lists png and gif, not webp), and the tronbyt push API takes WebP. This
+  # package also exposes libwebpmux, which is what makes the animated reset row
+  # possible — see docs/plans/2026-07-28-mac-menubar-app-design.md.
+  libwebp:
+    url: https://github.com/SDWebImage/libwebp-Xcode.git
+    from: "1.5.0"
+
+targets:
+  ClaudeUsage:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/ClaudeUsage
+    dependencies:
+      - package: libwebp
+    info:
+      path: Sources/ClaudeUsage/Info.plist
+      properties:
+        # Menu bar only: no Dock icon, no main window.
+        LSUIElement: true
+        CFBundleName: Claude Usage
+        CFBundleDisplayName: Claude Usage
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: ""
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tbird.ClaudeUsage
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Signed with the real Developer ID from the start, not ad-hoc: the
+        # Keychain consent grant for Claude Code's credential is bound to the
+        # requesting app's signing identity, so switching identities later would
+        # invalidate the grant and re-prompt.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application: Taylor Bird (UFCDGSKCXB)"
+        DEVELOPMENT_TEAM: UFCDGSKCXB
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "6.0"
+
+  ClaudeUsageTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/ClaudeUsageTests
+    dependencies:
+      - target: ClaudeUsage
+    settings:
+      base:
+        # The test bundle MUST be signed with the same team as the app. The app
+        # runs under hardened runtime, and such a process refuses to dlopen code
+        # from a different team — an ad-hoc ("-") test bundle fails at load with
+        # "mapping process and mapped file (non-platform) have different Team IDs".
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Developer ID Application: Taylor Bird (UFCDGSKCXB)"
+        DEVELOPMENT_TEAM: UFCDGSKCXB
+        ENABLE_HARDENED_RUNTIME: NO
+        # Required: codesign refuses a bundle with no Info.plist, and xcodegen
+        # does not synthesise one for test targets without an `info:` block.
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  ClaudeUsage:
+    build:
+      targets:
+        ClaudeUsage: all
+        ClaudeUsageTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ClaudeUsageTests
