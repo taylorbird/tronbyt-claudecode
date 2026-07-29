@@ -68,7 +68,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.tbird.ClaudeUsage
         MARKETING_VERSION: "1.0"
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "-"    # ad-hoc until a Developer ID cert exists (Task 12)
+        CODE_SIGN_IDENTITY: "Developer ID Application: Taylor Bird (UFCDGSKCXB)"
+        DEVELOPMENT_TEAM: UFCDGSKCXB
         ENABLE_HARDENED_RUNTIME: YES
   ClaudeUsageTests:
     type: bundle.unit-test
@@ -445,10 +446,24 @@ User-Agent: claude-code/2.1.9
 
 ---
 
-## Task 7: Frame renderer — geometry
+## Task 7: Frame renderer — glyph font and geometry
+
+**Scope correction (2026-07-29):** this task also needs a bitmap font, which the
+plan originally missed. The frame contains text (`48`, `5H`, `AS OF 15:44`) and the
+current display gets it from pixlet's built-in `tom-thumb`. Swift has no
+equivalent, and Core Graphics cannot substitute: any real font rendered 5 pixels
+tall is illegible regardless of antialiasing. So a 3x5 glyph set is authored here —
+digits, A-Z, `%`, `:`, `(`, `)`, `-`, space. Written from scratch rather than
+copying tom-thumb's data, whose licensing has not been checked.
+
+3 pixels wide plus 1 of spacing gives a 4px advance, which is where the design
+doc's "~16 characters across 64px" comes from.
 
 **Files:**
+- Create: `mac/Sources/ClaudeUsage/PixelFont.swift`
+- Create: `mac/Sources/ClaudeUsage/Canvas.swift`
 - Create: `mac/Sources/ClaudeUsage/FrameRenderer.swift`
+- Create: `mac/Tests/ClaudeUsageTests/PixelFontTests.swift`
 - Create: `mac/Tests/ClaudeUsageTests/FrameRendererTests.swift`
 
 Port `ring_pixels`, `pct_color`, and `countdown_text` from `claude_usage.star`.
@@ -533,14 +548,19 @@ device greys; wake it, confirm colour returns within seconds.
 
 ## Task 12: Signing, notarization, and cutover
 
-**Blocked on:** a Developer ID Application certificate. `security find-identity -v
--p codesigning` currently reports **0 valid identities**. Create one at
-developer.apple.com, download, install, and re-run that command to confirm before
-starting this task. Development up to here works fine ad-hoc signed.
+**Unblocked 2026-07-29:** `Developer ID Application: Taylor Bird (UFCDGSKCXB)`
+is installed and `security find-identity -v -p codesigning` reports 1 valid
+identity. Team ID `UFCDGSKCXB`. A Developer ID *Installer* cert also exists, unused
+— it would only matter if we ever ship a `.pkg` rather than a zipped `.app`.
+
+**Note:** builds are signed with the real Developer ID from Task 1 onward, not
+ad-hoc. This is deliberate: the macOS Keychain consent grant for Claude Code's
+credential item (Task 5) is bound to the requesting app's signing identity, so
+developing under ad-hoc and re-signing later would silently invalidate the grant
+and re-prompt. Signing consistently from the start means you approve it once.
 
 **Steps:**
-1. Set `CODE_SIGN_IDENTITY` in `mac/project.yml` to the Developer ID, regenerate.
-2. Archive and export; sign with hardened runtime and a timestamp.
+1. Archive and export; sign with hardened runtime and a timestamp.
 3. Notarize with `xcrun notarytool submit --wait`, then `xcrun stapler staple`.
 4. Verify: `codesign -dv --verbose=4` and `spctl -a -vvv` on the exported app.
 5. Install to `/Applications`, add to Login Items.
