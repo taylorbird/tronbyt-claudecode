@@ -15,6 +15,10 @@ final class UsageClient {
     private(set) var fetchedAt: Date?
     /// Description of the most recent failure, or nil if the last fetch succeeded.
     private(set) var lastError: String?
+    /// True when the *credential* is the problem (missing, denied, rejected) —
+    /// i.e. the fix is logging into Claude Code. Unrelated failures (5xx,
+    /// network, bad JSON) leave the last known credential state untouched.
+    private(set) var credentialProblem = false
 
     static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     /// Sent verbatim; the endpoint rejects requests without the beta header.
@@ -56,11 +60,16 @@ final class UsageClient {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status == 200 else {
                 lastError = Self.describe(status: status, body: data)
+                if status == 401 || status == 403 { credentialProblem = true }
                 return   // NB: snapshot and fetchedAt untouched
             }
             snapshot = try UsageSnapshot(json: data)
             fetchedAt = clock()
             lastError = nil
+            credentialProblem = false
+        } catch let error as CredentialError {
+            lastError = String(describing: error)
+            credentialProblem = true
         } catch {
             lastError = String(describing: error)
         }

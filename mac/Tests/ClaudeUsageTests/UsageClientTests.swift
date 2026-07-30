@@ -136,6 +136,46 @@ final class UsageClientTests: XCTestCase {
         XCTAssertNotNil(client.lastError)
     }
 
+    // MARK: credentialProblem — what raises the menu bar warning triangle
+
+    func testMissingCredentialRaisesCredentialProblem() async {
+        let client = makeClient(credential: { throw CredentialError.notFound })
+        await client.fetch()
+        XCTAssertTrue(client.credentialProblem)
+    }
+
+    func testUnauthorizedRaisesCredentialProblem() async {
+        StubURLProtocol.respond = { _ in (401, Data()) }
+        let client = makeClient()
+        await client.fetch()
+        XCTAssertTrue(client.credentialProblem)
+    }
+
+    func testSuccessClearsCredentialProblem() async {
+        StubURLProtocol.respond = { _ in (401, Data()) }
+        let client = makeClient()
+        await client.fetch()
+
+        StubURLProtocol.respond = { _ in (200, self.healthy) }
+        await client.fetch()
+        XCTAssertFalse(client.credentialProblem)
+    }
+
+    /// A 500 says nothing about the credential either way: it must neither raise
+    /// the warning from a clean state nor clear one raised by a real rejection.
+    func testUnrelatedFailureLeavesCredentialProblemUntouched() async {
+        StubURLProtocol.respond = { _ in (500, Data()) }
+        let client = makeClient()
+        await client.fetch()
+        XCTAssertFalse(client.credentialProblem)
+
+        StubURLProtocol.respond = { _ in (401, Data()) }
+        await client.fetch()
+        StubURLProtocol.respond = { _ in (500, Data()) }
+        await client.fetch()
+        XCTAssertTrue(client.credentialProblem, "a 500 must not clear a real rejection")
+    }
+
     func testRecoveryClearsTheError() async {
         StubURLProtocol.respond = { _ in (500, Data()) }
         let client = makeClient()
