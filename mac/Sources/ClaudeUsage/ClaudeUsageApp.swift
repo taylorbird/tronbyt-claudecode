@@ -5,9 +5,23 @@ import SwiftUI
 ///
 /// One process. No HTTP server, no helper agents — that whole arrangement is what
 /// this replaces.
+/// Double-clicking the app in Finder while it is running "reopens" it. For a
+/// menu bar app that would otherwise do visibly nothing, so show the About
+/// window. (Settings can't be opened programmatically on modern macOS —
+/// SettingsLink requires a user interaction context — so About it is, and it
+/// points at where Settings live.)
+final class ReopenDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows: Bool) -> Bool {
+        MainActor.assumeIsolated { AboutWindow.shared.show() }
+        return true
+    }
+}
+
 @main
 @MainActor
 struct ClaudeUsageApp: App {
+    @NSApplicationDelegateAdaptor(ReopenDelegate.self) private var reopenDelegate
     @State private var settings = AppSettings()
     @State private var client = UsageClient()
     @State private var scheduler: Scheduler?
@@ -16,7 +30,11 @@ struct ClaudeUsageApp: App {
         MenuBarExtra {
             MenuContent(client: client, scheduler: scheduler)
         } label: {
-            Text(menuBarTitle)
+            Image(nsImage: MenuBarIcon.image)
+            if menuBarState.showsWarning {
+                Image(systemName: "exclamationmark.triangle.fill")
+            }
+            Text(menuBarState.text)
                 .task { startIfNeeded() }
         }
 
@@ -32,13 +50,10 @@ struct ClaudeUsageApp: App {
         scheduler.start()
     }
 
-    /// Always the 5-hour figure — it moves fastest and gates the next hour of work,
-    /// and a number whose meaning never changes can be read at a glance.
-    private var menuBarTitle: String {
-        guard client.staleness != .dead, let percent = client.snapshot?.sessionPercent else {
-            return "5H --"
-        }
-        return "5H \(percent)%"
+    private var menuBarState: MenuBarState {
+        MenuBarState.make(sessionPercent: client.snapshot?.sessionPercent,
+                          staleness: client.staleness,
+                          credentialProblem: client.credentialProblem)
     }
 }
 
@@ -47,6 +62,15 @@ private struct MenuContent: View {
     let scheduler: Scheduler?
 
     var body: some View {
+        // Title row: Clawd + name, rendered by the menu as a disabled header.
+        Label {
+            Text("Claude Code Usage")
+        } icon: {
+            Image(nsImage: MenuBarIcon.image)
+        }
+        .labelStyle(.titleAndIcon)
+        Divider()
+
         if let snapshot = client.snapshot, !snapshot.limits.isEmpty {
             ForEach(snapshot.limits, id: \.label) { limit in
                 Text(row(for: limit))
@@ -68,6 +92,7 @@ private struct MenuContent: View {
             Task { await client.fetch(); await scheduler?.pushCurrentFrame() }
         }
         SettingsLink { Text("Settings…") }
+        Button("About Claude Usage") { AboutWindow.shared.show() }
         Button("Quit") { NSApplication.shared.terminate(nil) }
             .keyboardShortcut("q")
     }
