@@ -61,6 +61,13 @@ enum WebPAnimation {
             throw WebPAnimationError.optionsInitFailed
         }
         options.anim_params.loop_count = 0   // 0 == loop forever
+        // Every frame a full-canvas key-frame (kmax == 1 means exactly that).
+        // By default the encoder ships frame 2 as a cropped delta rectangle of
+        // just the changed pixels; our own decode of that is bit-exact, but the
+        // panel's decoder composites it a pixel off (observed: the gauges shift
+        // 1px on the alternate frame). Full frames leave nothing to composite.
+        // Cost at 64x32 lossless is a few hundred bytes.
+        options.kmax = 1
 
         guard let encoder = WebPAnimEncoderNew(Int32(width), Int32(height), &options) else {
             throw WebPAnimationError.encoderAllocFailed
