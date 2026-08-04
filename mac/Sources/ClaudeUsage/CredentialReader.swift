@@ -27,7 +27,9 @@ enum CredentialError: Error, CustomStringConvertible {
         case .notFound:
             return "no Claude Code credential in the Keychain — is Claude Code logged in?"
         case .accessDenied:
-            return "Keychain access denied — approve the prompt, or re-run and choose Always Allow"
+            return "Keychain access denied — approve the prompt. If it keeps coming "
+                + "back, our team is missing from the item's partition list; "
+                + "Always Allow alone does not add it (see learnings)"
         case let .keychainError(status):
             let message = SecCopyErrorMessageString(status, nil) as String? ?? "unknown"
             return "Keychain read failed (\(status)): \(message)"
@@ -62,7 +64,11 @@ enum CredentialReader {
             return try parse(data)
         case errSecItemNotFound:
             throw CredentialError.notFound
-        case errSecAuthFailed, errSecUserCanceled, errSecInteractionNotAllowed:
+        // errSecInteractionRequired is what a partition-list mismatch returns when
+        // UI is unavailable (e.g. before login). Same user-facing fix as the rest,
+        // so it belongs here rather than in the opaque keychainError bucket.
+        case errSecAuthFailed, errSecUserCanceled, errSecInteractionNotAllowed,
+             errSecInteractionRequired:
             throw CredentialError.accessDenied(status)
         default:
             throw CredentialError.keychainError(status)
